@@ -16,7 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QSize, QThreadPool, QSettings, Slot, QRect, QRectF, QEvent, Signal, QPointF, QTimer
 from PySide6.QtGui import (
     QIcon, QPixmap, QImage, QColor, QPainter, QFont, QFontMetrics, QGuiApplication, QFontDatabase,
-    QPen, QBrush, QPainterPath,
+    QPen, QBrush, QPainterPath, QCursor,
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QSplitter,
@@ -38,6 +38,7 @@ from thumbnail_utils import (
 from text_engine import load_text_file, join_paragraphs, split_paragraphs
 from music_player import MusicController, MUSIC_EXTS
 import image_notes
+import mix_bundle
 import subtitles
 import ppt_engine
 
@@ -165,7 +166,17 @@ TRANSLATIONS = {
             "• 자세한 진단: 프로젝트 폴더에서  python test_ppt_diag.py \"파일경로\""
         ),
         "add_txt_file": "📂 파일 추가…",
-        "txt_lib_hint": "💡 텍스트·PPT·동영상 파일이나 폴더를 끌어다 놓거나(드래그&드롭) 클릭하여 불러옵니다.",
+        "txt_lib_hint": "💡 텍스트·PPT·동영상 파일이나 폴더를 끌어다 놓거나(드래그&드롭) 클릭하여 불러옵니다. 목록의 한 항목을 다른 항목 위에 끌어다 겹치면 🔗 묶음이 됩니다.",
+        "mix_files_suffix": "개 파일",
+        "status_mix_presenting": "| 🔗 묶음 {0}/{1} 송출 중",
+        "mix_ppt_preparing": "⏳ PPT 슬라이드를 준비하는 중…",
+        "msg_mix_waiting": "이 PPT 는 아직 슬라이드를 그림으로 만드는 중입니다 - 잠시 뒤에 눌러 주세요",
+        "msg_mix_created": "🔗 묶었습니다: {0}  (카드를 끌어 순서를 섞을 수 있습니다)",
+        "msg_mix_added": "🔗 묶음에 넣었습니다: {0}",
+        "msg_mix_ungrouped": "묶음을 풀었습니다",
+        "msg_mix_ppt_failed": "묶음 안의 PPT 를 불러오지 못했습니다: {0}",
+        "mix_menu_ungroup": "🔗 묶음 풀기 (원래 파일들로 되돌리기)",
+        "mix_menu_hint": "다른 항목 위에 끌어다 겹치면 묶음이 됩니다",
         "btn_add_text_file": "📄 텍스트…",
         "btn_add_text_file_tip": "문단으로 사용할 텍스트 파일(.txt) 등록",
         "btn_add_image_folder": "📁 이미지 폴더…",
@@ -472,7 +483,17 @@ TRANSLATIONS = {
             "• For details, run:  python test_ppt_diag.py \"path\\to\\file.pptx\""
         ),
         "add_txt_file": "📂 Add Files…",
-        "txt_lib_hint": "💡 Drag and drop text, PPT or video files or folders here, or click to load.",
+        "txt_lib_hint": "💡 Drag and drop text, PPT or video files or folders here, or click to load. Drop one item onto another to make a 🔗 bundle.",
+        "mix_files_suffix": " files",
+        "status_mix_presenting": "| 🔗 Bundle {0}/{1} presenting",
+        "mix_ppt_preparing": "⏳ Preparing PPT slides…",
+        "msg_mix_waiting": "This PPT's slides are still being prepared - please try again shortly",
+        "msg_mix_created": "🔗 Bundled: {0}  (drag cards to mix their order)",
+        "msg_mix_added": "🔗 Added to the bundle: {0}",
+        "msg_mix_ungrouped": "Bundle split back into its files",
+        "msg_mix_ppt_failed": "Could not load a PPT in the bundle: {0}",
+        "mix_menu_ungroup": "🔗 Split Bundle (back to the original files)",
+        "mix_menu_hint": "Drop onto another item to make a bundle",
         "btn_add_text_file": "📄 Text…",
         "btn_add_text_file_tip": "Register text files (.txt) for paragraphs",
         "btn_add_image_folder": "📁 Folder…",
@@ -693,6 +714,7 @@ USER_ROLE_PATH = Qt.ItemDataRole.UserRole
 USER_ROLE_KIND = Qt.ItemDataRole.UserRole + 1
 USER_ROLE_INDEX = Qt.ItemDataRole.UserRole + 2
 USER_ROLE_THUMB = Qt.ItemDataRole.UserRole + 3
+USER_ROLE_CAPTION = Qt.ItemDataRole.UserRole + 10   # 묶음 카드 아래 이름 줄
 
 # 가운데 썸네일 그리드(이미지 폴더/PPT 슬라이드)의 원본 캐시 해상도.
 # Ctrl+휠로 카드를 키워도 확대된 썸네일이 흐려지지 않도록 실제 표시 크기보다
@@ -756,15 +778,46 @@ class DropListWidget(QListWidget):
     """
     filesDropped = Signal(list)
     itemsReordered = Signal()   # 드래그로 내부 순서가 바뀐 뒤 발생
+    itemsMerged = Signal(list, str)   # (끌어 온 항목 경로들, 겹친 대상 경로) - 묶음 만들기
 
     def __init__(self, parent=None, reorderable=False):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self._reorderable = reorderable
+        self._merge_row = -1        # 끌어 겹치려는 대상 줄 (테두리로 표시)
+        self.merge_enabled = False
         if reorderable:
             self.setDragEnabled(True)
             self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
             self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    def merge_target_row(self, pos) -> int:
+        """줄 가운데 부분에 놓으면 '겹치기'(묶음), 위·아래 가장자리에 놓으면 순서 바꾸기"""
+        if not self.merge_enabled:
+            return -1
+        item = self.itemAt(pos)
+        if item is None or item.isSelected():
+            return -1
+        rect = self.visualItemRect(item)
+        edge = max(4, rect.height() // 4)
+        if rect.top() + edge <= pos.y() <= rect.bottom() - edge:
+            return self.row(item)
+        return -1
+
+    def _set_merge_row(self, row: int):
+        if row != self._merge_row:
+            self._merge_row = row
+            self.viewport().update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._merge_row >= 0 and self.item(self._merge_row) is not None:
+            painter = QPainter(self.viewport())
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(QPen(QColor("#ffd866"), 2))
+            painter.setBrush(QColor(255, 216, 102, 40))
+            painter.drawRoundedRect(QRectF(self.visualItemRect(self.item(self._merge_row))).adjusted(1, 1, -1, -1), 4, 4)
+            painter.end()
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -775,10 +828,21 @@ class DropListWidget(QListWidget):
     def dragMoveEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
-        else:
-            super().dragMoveEvent(event)
+            return
+        row = self.merge_target_row(event.position().toPoint()) if event.source() is self else -1
+        self._set_merge_row(row)
+        if row >= 0:
+            event.setDropAction(Qt.DropAction.MoveAction)
+            event.accept()
+            return
+        super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event):
+        self._set_merge_row(-1)
+        super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
+        self._set_merge_row(-1)
         if event.mimeData().hasUrls():
             paths = []
             for url in event.mimeData().urls():
@@ -789,6 +853,16 @@ class DropListWidget(QListWidget):
                 event.acceptProposedAction()
                 self.filesDropped.emit(paths)
                 return
+        row = self.merge_target_row(event.position().toPoint()) if event.source() is self else -1
+        if row >= 0:
+            sources = [it.data(USER_ROLE_PATH) for it in self.selectedItems() if it.data(USER_ROLE_PATH)]
+            target = self.item(row).data(USER_ROLE_PATH)
+            # 항목을 옮기지 않는다 (IgnoreAction 이면 원래 자리의 항목도 지워지지 않는다)
+            event.setDropAction(Qt.DropAction.IgnoreAction)
+            event.accept()
+            if sources and target:
+                self.itemsMerged.emit(sources, target)
+            return
         super().dropEvent(event)
         if self._reorderable:
             self.itemsReordered.emit()
@@ -1404,7 +1478,33 @@ class ParagraphCardDelegate(QStyledItemDelegate):
         card_h = thumb_h + cls.media_title_height(font) + cls.MEDIA_TITLE_GAP + 2 * cls.MEDIA_PAD + 2
         return card_h, inner_w, thumb_h
 
-    def _paint_media_card(self, painter: QPainter, option, index):
+    _MIX_BADGES = {"text": ("📄", "#7fd1ff"), "slide": ("📊", "#ffb454"), "wait": ("⏳", "#ffb454"),
+                   "image": ("🖼", "#8ce99a"), "video": ("🎬", "#ff9ecf")}
+
+    def _paint_mix_card(self, painter: QPainter, option, index):
+        """묶음 카드: 종류마다 모양은 다르지만 크기는 같게 (끌어 섞기 쉽게)"""
+        kind = index.data(USER_ROLE_KIND) or ""
+        caption = index.data(USER_ROLE_CAPTION) or ""
+        if kind in ("text", "wait"):
+            self._paint_media_card(painter, option, index, title=caption,
+                                   body_text=str(index.data(Qt.ItemDataRole.DisplayRole) or ""))
+        else:
+            self._paint_media_card(painter, option, index, title=caption)
+        glyph, color = self._MIX_BADGES.get(kind, ("•", "#cccccc"))
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        badge = QRect(option.rect.left() + self.MEDIA_PAD + 2, option.rect.top() + self.MEDIA_PAD + 2, 26, 22)
+        painter.setPen(QPen(QColor(color), 1.5))
+        painter.setBrush(QColor(0, 0, 0, 170))
+        painter.drawRoundedRect(QRectF(badge), 5, 5)
+        font = QFont(option.font)
+        font.setPixelSize(13)
+        painter.setFont(font)
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, glyph)
+        painter.restore()
+
+    def _paint_media_card(self, painter: QPainter, option, index, title=None, body_text=None):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = QRectF(option.rect).adjusted(1, 1, -1, -1)
@@ -1427,6 +1527,21 @@ class ParagraphCardDelegate(QStyledItemDelegate):
         img_rect = QRect(inner.left(), inner.top(), inner.width(),
                          max(1, inner.height() - title_h - self.MEDIA_TITLE_GAP))
         icon = index.data(Qt.ItemDataRole.DecorationRole)
+        if body_text is not None:
+            # 글 카드: 그림 칸 자리에 글을 줄바꿈해 넣는다 (넘치면 잘린다)
+            inner_text = img_rect.adjusted(6, 26, -6, -4)     # 위쪽은 종류 표시(📄) 자리
+            painter.setFont(option.font)
+            painter.setPen(QColor("#f0f0f0"))
+            flags = int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap)
+            need = QFontMetrics(option.font).boundingRect(inner_text, flags, body_text).height()
+            if need > inner_text.height():
+                # 다 들어가지 않으면 첫 줄부터 보이게 (가운데 맞춤이면 위아래가 함께 잘린다)
+                flags = int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap)
+            painter.save()
+            painter.setClipRect(inner_text)
+            painter.drawText(inner_text, flags, body_text)
+            painter.restore()
+            icon = None
         if isinstance(icon, QIcon) and not icon.isNull():
             pix = icon.pixmap(img_rect.size())
             if not pix.isNull():
@@ -1440,8 +1555,8 @@ class ParagraphCardDelegate(QStyledItemDelegate):
         text_rect = QRect(inner.left(), img_rect.bottom() + 1 + self.MEDIA_TITLE_GAP,
                           inner.width(), title_h)
         fm = QFontMetrics(option.font)
-        text = fm.elidedText(str(index.data(Qt.ItemDataRole.DisplayRole) or ""),
-                             Qt.TextElideMode.ElideMiddle, text_rect.width())
+        label = title if title is not None else str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        text = fm.elidedText(label, Qt.TextElideMode.ElideMiddle, text_rect.width())
         painter.setFont(option.font)
         painter.setPen(QColor("#ffffff") if selected else QColor("#e0e0e0"))
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, text)
@@ -1451,6 +1566,9 @@ class ParagraphCardDelegate(QStyledItemDelegate):
         owner = self._owner
         if getattr(owner, "current_source_type", "text") == "folder":
             self._paint_media_card(painter, option, index)
+            return
+        if getattr(owner, "current_source_type", "text") == "mix":
+            self._paint_mix_card(painter, option, index)
             return
         super().paint(painter, option, index)
         idx = index.data(USER_ROLE_INDEX)
@@ -1584,6 +1702,9 @@ class MainWindow(QMainWindow):
     ppt_edit_open_failed = Signal(str)           # 편집용 파워포인트 열기 실패
     ppt_edit_opened_as_copy = Signal(str)        # 편집용으로 원본 대신 임시 복사본이 열림
     ppt_edit_synced = Signal(str)                # 임시 복사본 저장 내용이 원본에 자동 반영됨
+    mix_ppt_ready = Signal(str)                  # 묶음 안의 PPT 슬라이드가 그림으로 다 만들어짐
+    mix_ppt_failed = Signal(str, str)            # 묶음 안의 PPT 를 그림으로 만들지 못함 (경로, 이유)
+    mix_ppt_cancelled = Signal(str)              # 애니메이션 모드 때문에 중단됨 (모드를 끄면 다시)
 
     def __init__(self):
         super().__init__()
@@ -1603,6 +1724,7 @@ class MainWindow(QMainWindow):
         settings_dir = os.environ.get("BGPT_SETTINGS_DIR") or os.path.join(
             os.environ.get("APPDATA", str(Path.home())), "BgTextPresenter")
         os.makedirs(settings_dir, exist_ok=True)
+        self._settings_dir = settings_dir           # 묶음(.bgmix) 파일도 이 아래 mixes 폴더에 둔다
         self.settings = QSettings(os.path.join(settings_dir, "settings.ini"), QSettings.Format.IniFormat)
 
         # 언어 설정 (기본 ko)
@@ -1668,6 +1790,20 @@ class MainWindow(QMainWindow):
         self.ppt_edit_open_failed.connect(self._on_ppt_edit_open_failed)
         self.ppt_edit_opened_as_copy.connect(self._on_ppt_edit_opened_as_copy)
         self.ppt_edit_synced.connect(self._on_ppt_edit_synced)
+        self.mix_ppt_ready.connect(self._on_mix_ppt_ready)
+        self.mix_ppt_failed.connect(self._on_mix_ppt_failed)
+        self.mix_ppt_cancelled.connect(lambda p: self._mix_exporting.discard(p))
+        self.mix_entries = []
+        self.mix_index = -1
+        self._mix_exporting = set()
+        self._mix_video_path = ""
+        self._mix_drag_from = None
+        self._mix_dragging = False
+        self._mix_drag_start = None
+        self._mix_scroll_step = 0
+        self._mix_scroll_timer = QTimer(self)
+        self._mix_scroll_timer.setInterval(40)
+        self._mix_scroll_timer.timeout.connect(self._mix_autoscroll_tick)
 
         # 송출 창
         self.presenter = PresenterWindow()
@@ -1826,6 +1962,8 @@ class MainWindow(QMainWindow):
                 self.lbl_txt_file.setText(self.t("direct_text_title"))
             elif getattr(self, "current_source_type", "text") == "folder":
                 self.lbl_txt_file.setText(f"📁 {os.path.basename(self.text_file_path)} ({len(self.media_slides)}{self.t('items_count_suffix')})")
+        if hasattr(self, "lbl_txt_file") and getattr(self, "current_source_type", "text") == "mix":
+            self._set_mix_title_label()
 
         if hasattr(self, "grp_para"):
             self.grp_para.setTitle(self.t("para_select_group"))
@@ -2820,6 +2958,11 @@ class MainWindow(QMainWindow):
         self.list_text_files.viewport().installEventFilter(self)
         self.list_text_files.filesDropped.connect(self._handle_text_files_dropped)
         self.list_text_files.itemsReordered.connect(self._on_text_files_reordered)
+        # 한 항목을 다른 항목 위에 끌어다 겹치면 묶음이 된다
+        self.list_text_files.merge_enabled = True
+        self.list_text_files.itemsMerged.connect(self._on_library_items_merged)
+        self.list_text_files.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_text_files.customContextMenuRequested.connect(self._on_library_context_menu)
         group_layout.addWidget(self.list_text_files, 1)
 
         self.lbl_text_files_hint = QLabel("💡 텍스트 파일이나 폴더를 직접 끌어다 놓거나(드래그&드롭) 클릭하여 로드합니다.")
@@ -3051,8 +3194,12 @@ class MainWindow(QMainWindow):
             return
         pptx = self._is_pptx_mode()
         images = self._is_image_folder_mode()
-        notes_mode = pptx or images      # 오른쪽 칸에 노트를 보여 주는 모드
-        video = getattr(self, "current_source_type", "text") == "video"
+        mix_kind = self._mix_focus_kind()
+        if mix_kind:
+            # 묶음: 지금 고른(송출한) 카드의 종류에 따라 노트 칸 / 글자 스타일 칸
+            images = mix_kind == "image"
+        notes_mode = pptx or images or mix_kind == "slide"   # 오른쪽 칸에 노트를 보여 주는 모드
+        video = getattr(self, "current_source_type", "text") in ("video", "mix")
         self.grp_edit.setVisible(not notes_mode and not video)
         self.grp_style.setVisible(not notes_mode)
         self.grp_notes.setVisible(notes_mode)
@@ -3067,7 +3214,8 @@ class MainWindow(QMainWindow):
             policy = (QSizePolicy.Policy.Preferred if notes_mode
                       else QSizePolicy.Policy.Maximum)
             container.setSizePolicy(QSizePolicy.Policy.Preferred, policy)
-        mode_key = "pptx" if pptx else ("images" if images else "")
+        mode_key = ("mix" if mix_kind and notes_mode else
+                    "pptx" if pptx else ("images" if images else ""))
         if not notes_mode or mode_key != getattr(self, "_notes_panel_mode", ""):
             # 모드가 바뀌면 앞 모드의 노트를 남겨 두지 않는다
             self.txt_slide_notes.clear()
@@ -3221,6 +3369,9 @@ class MainWindow(QMainWindow):
             # 애니메이션 모드 때문에 멈춰 둔 이미지 내보내기를 이어서 진행
             if resume_export:
                 self._resume_ppt_export()
+        if was_active and getattr(self, "current_source_type", "") == "mix":
+            # 슬라이드쇼 때문에 미뤄 둔 묶음 안 PPT 그림 만들기를 이어서
+            QTimer.singleShot(0, self._mix_start_ppt_exports)
 
     def _resume_ppt_export(self):
         """애니메이션 모드로 중단됐던 슬라이드 이미지 내보내기를 이어서 진행한다"""
@@ -3434,10 +3585,11 @@ class MainWindow(QMainWindow):
         if popup is None or not hasattr(self, "txt_slide_notes"):
             return
         enabled = hasattr(self, "btn_notes_popup") and self.btn_notes_popup.isChecked()
-        notes_mode = self._is_pptx_mode() or self._is_image_folder_mode()
+        notes_mode = (self._is_pptx_mode() or self._is_image_folder_mode()
+                      or self._mix_focus_kind() in ("slide", "image"))
         where = self.lbl_notes_slide.text() if notes_mode else ""
         text = self.txt_slide_notes.toPlainText() if notes_mode else ""
-        if notes_mode and self._is_image_folder_mode():
+        if notes_mode and (self._is_image_folder_mode() or self._mix_focus_kind() in ("slide", "image")):
             name = self.lbl_notes_slide.toolTip()
             if name and where:
                 where = f"{where}  {name}"
@@ -3473,6 +3625,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, "para_tab") and self.para_tab.currentIndex() == 1:
             return False        # 직접 입력 탭에서는 문단 넘김을 하지 않는다 (본 창과 같게)
         source = getattr(self, "current_source_type", "text")
+        if source == "mix":
+            return self._mix_handle_key(key)
         if source == "folder":
             if key in next_keys:
                 self._slide_step(True)
@@ -3554,6 +3708,9 @@ class MainWindow(QMainWindow):
 
     def _edit_image_note(self, idx: int = None):
         """사진에 숨은 글을 넣거나 고친다. 화면(송출)에는 아무것도 내보내지 않는다."""
+        if getattr(self, "current_source_type", "text") == "mix":
+            self._edit_mix_image_note(idx)
+            return
         if not self._is_image_folder_mode():
             return
         if idx is None:
@@ -3568,6 +3725,20 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, self.t("btn_image_note_edit"),
                                     self.t("image_note_unsupported", ext))
             return
+        text = self._image_note_dialog_for(path)
+        if text is None:
+            return
+        # 목록 위치가 그대로인지 확인 (편집하는 동안 다른 폴더로 바뀌었을 수 있다)
+        if 0 <= idx < len(self.media_slides) and self.media_slides[idx] == path:
+            self._image_note(idx)
+            self.media_notes[idx] = image_notes.read_note(path)
+            self._refresh_image_card_title(idx)
+            if getattr(self, "_notes_shown_index", -1) == idx:
+                self._show_slide_notes(idx)
+
+    def _image_note_dialog_for(self, path: str):
+        """숨은 글 편집 창을 띄워 저장한다. 저장했으면 새 글, 취소·실패·변화 없음이면 None"""
+        name = os.path.basename(path)
         # 다른 곳에서 바뀌었을 수 있으니 편집할 때는 파일에서 새로 읽는다
         current = image_notes.read_note(path)
 
@@ -3598,24 +3769,18 @@ class MainWindow(QMainWindow):
         accepted = dlg.exec() == QDialog.DialogCode.Accepted
         self._image_note_dialog = None
         if not accepted:
-            return
+            return None
         text = editor.toPlainText().replace("\r\n", "\n").rstrip()
         if text == current.rstrip():
-            return
+            return None
         try:
             image_notes.write_note(path, text)
         except image_notes.ImageNoteError as e:
             QMessageBox.warning(self, self.t("btn_image_note_edit"), self.t("image_note_failed", e))
-            return
-        # 목록 위치가 그대로인지 확인 (편집하는 동안 다른 폴더로 바뀌었을 수 있다)
-        if 0 <= idx < len(self.media_slides) and self.media_slides[idx] == path:
-            self._image_note(idx)
-            self.media_notes[idx] = image_notes.read_note(path)
-            self._refresh_image_card_title(idx)
-            if getattr(self, "_notes_shown_index", -1) == idx:
-                self._show_slide_notes(idx)
+            return None
         self.statusBar().showMessage(
             self.t("msg_image_note_saved" if text else "msg_image_note_removed", name), 4000)
+        return text
 
     # ------------------------------------------------------------------
     # 다크 테마
@@ -4568,7 +4733,9 @@ class MainWindow(QMainWindow):
             return
         # 라이브러리에서 클릭한 것만으로는 아직 송출하지 않는다 - 목록/미리보기만
         # 갱신하고, 실제로 문단이나 슬라이드를 클릭해야 비로소 화면에 나간다.
-        if kind == "pptx" or ppt_engine.is_ppt_file(path):
+        if kind == "mix" or mix_bundle.is_mix_file(path):
+            self._load_mix(path)
+        elif kind == "pptx" or ppt_engine.is_ppt_file(path):
             self._load_pptx(path, broadcast=False, prepare=True)
             # 애니메이션 모드를 켤 때 바로 뜨도록 파워포인트에 미리 열어 둔다
             self._show_prepared_path = path
@@ -4623,6 +4790,7 @@ class MainWindow(QMainWindow):
         "pptx": "#ffb454",     # PPT - 주황
         "folder": "#8ce99a",   # 이미지 폴더 - 연두
         "video": "#ff9ecf",    # 동영상 - 분홍
+        "mix": "#ffd866",      # 묶음 - 노랑
     }
 
     def _remove_one_text_file(self, path: str):
@@ -4649,7 +4817,11 @@ class MainWindow(QMainWindow):
             if not path:
                 continue
             base = os.path.basename(path)
-            if os.path.isdir(path):
+            if mix_bundle.is_mix_file(path):
+                data = mix_bundle.load_mix(path)
+                text = f"🔗 {mix_bundle.display_name(data)} ({len(data['sources'])}{self.t('mix_files_suffix')})"
+                kind = "mix"
+            elif os.path.isdir(path):
                 imgs = scan_folder_images(path)
                 text = f"📁 {folder_badge} {base} ({len(imgs)}{count_suffix})"
                 kind = "folder"
@@ -4693,6 +4865,474 @@ class MainWindow(QMainWindow):
         self._library_font_size = size
         self.settings.setValue("text_files/list_font_size", size)
         self._refresh_text_files_list(select_path=getattr(self, "current_source_path", ""))
+
+
+    # ------------------------------------------------------------------
+    # 묶음 (텍스트·PPT·사진·동영상을 한데 모아 보고, 끌어서 순서를 섞기)
+    # ------------------------------------------------------------------
+    def _mix_readers(self):
+        return dict(load_text=load_text_file, read_ppt_cache=ppt_engine.read_cache,
+                    scan_images=scan_folder_images, is_ppt=ppt_engine.is_ppt_file,
+                    is_video=is_video_file)
+
+    def _load_mix(self, path: str, broadcast: bool = False):
+        """묶음을 가운데에 펼친다 (누르기 전에는 송출하지 않는다)"""
+        same = (getattr(self, "current_source_type", "") == "mix"
+                and getattr(self, "current_source_path", "") == path)
+        focus_key = (self.mix_entries[self.mix_index].key
+                     if same and 0 <= self.mix_index < len(self.mix_entries) else None)
+        self.current_source_type = "mix"
+        self.current_source_path = path
+        self.media_source_kind = "mix"
+        data = mix_bundle.load_mix(path)
+        self.media_source_name = mix_bundle.display_name(data)
+        self.media_slides = []
+        self.media_notes = []
+        self.media_slide_index = -1
+        self.paragraphs = []
+        self.paragraph_index = -1
+        # 묶음에는 저장할 텍스트 파일이 없다 (편집기의 '적용'이 원본을 덮어쓰지 않게)
+        self.text_file_path = ""
+        self._clear_paragraphs_unsaved()
+        self.mix_data = data
+        self.mix_entries = mix_bundle.build_entries(data, **self._mix_readers())
+        self.mix_index = -1
+        if focus_key is not None:
+            for i, e in enumerate(self.mix_entries):
+                if e.key == focus_key:
+                    self.mix_index = i
+                    break
+        if not same:
+            self._mix_video_path = ""
+        self._set_mix_title_label()
+        self.settings.setValue("text/file", path)
+        self.settings.setValue("text/source_type", "mix")
+        self._mix_start_ppt_exports()
+        if hasattr(self, "para_tab"):
+            self.para_tab.setCurrentIndex(0)
+        self._update_side_panel_mode()
+        self._rebuild_paragraph_list()
+        self._update_status()
+
+    def _set_mix_title_label(self):
+        try:
+            self.lbl_txt_file.setText(
+                f"🔗 {self.media_source_name} ({len(self.mix_entries)}{self.t('items_count_suffix')})")
+        except (RuntimeError, AttributeError):
+            pass
+
+    def _mix_start_ppt_exports(self):
+        """묶음 안의 PPT 중 아직 그림으로 만들지 않은 것은 뒤에서 만든다"""
+        if getattr(self, "_show_mode_active", False):
+            return      # 슬라이드쇼가 같은 파워포인트를 쓰고 있다 - 모드를 끄면 그때 만든다
+        for src in getattr(self, "mix_data", {}).get("sources", []):
+            if (src in self._mix_exporting or not os.path.isfile(src)
+                    or not ppt_engine.is_ppt_file(src) or ppt_engine.read_cache(src)):
+                continue
+            self._mix_exporting.add(src)
+            ppt_engine.export_async(
+                src,
+                on_done=lambda c, p=src: self.mix_ppt_ready.emit(p),
+                on_error=lambda m, p=src: self.mix_ppt_failed.emit(p, str(m)),
+                on_cancelled=lambda n, p=src: self.mix_ppt_cancelled.emit(p),
+                cancel=lambda: getattr(self, "_show_mode_active", False),
+                extract_notes=True,
+            )
+
+    def _on_mix_ppt_ready(self, path: str):
+        self._mix_exporting.discard(path)
+        if not ppt_engine.read_cache(path):
+            return              # 아직 그림이 없다 - 다시 읽어도 같다 (되풀이하지 않는다)
+        if (getattr(self, "current_source_type", "") == "mix"
+                and path in getattr(self, "mix_data", {}).get("sources", [])):
+            self._load_mix(self.current_source_path)
+
+    def _on_mix_ppt_failed(self, path: str, message: str):
+        self._mix_exporting.discard(path)
+        self.statusBar().showMessage(self.t("msg_mix_ppt_failed", f"{os.path.basename(path)} - {message}"), 8000)
+
+    def _fill_mix_cards(self):
+        """묶음 카드들을 가운데 목록에 넣는다 (그림은 뒤에서 읽어 붙인다)"""
+        for i, e in enumerate(self.mix_entries):
+            if e.kind == "text":
+                display = e.title
+                caption = f"{os.path.splitext(os.path.basename(e.source))[0]} · {e.index + 1}"
+            elif e.kind == "wait":
+                display = self.t("mix_ppt_preparing")
+                caption = os.path.basename(e.source)
+            elif e.kind == "slide":
+                display = caption = e.title
+            else:
+                display = caption = os.path.basename(e.path)
+            item = QListWidgetItem(display)
+            item.setData(USER_ROLE_INDEX, i)
+            item.setData(USER_ROLE_KIND, e.kind)
+            item.setData(USER_ROLE_PATH, e.path)
+            item.setData(USER_ROLE_CAPTION, caption)
+            self.list_paragraphs.addItem(item)
+            if e.kind in ("slide", "image", "video") and e.path and os.path.exists(e.path):
+                task = ThumbnailTask(e.path, *SLIDE_THUMB_BASE_SIZE, badge=(e.kind == "video"))
+                task.signals.finished.connect(self._on_slide_thumb_ready)
+                self.thread_pool.start(task)
+        if 0 <= self.mix_index < self.list_paragraphs.count():
+            self.list_paragraphs.setCurrentRow(self.mix_index)
+        else:
+            self.list_paragraphs.setCurrentRow(-1)
+
+    def _mix_focus_entry(self):
+        if getattr(self, "current_source_type", "") != "mix":
+            return None
+        i = getattr(self, "mix_index", -1)
+        entries = getattr(self, "mix_entries", [])
+        return entries[i] if 0 <= i < len(entries) else None
+
+    def _mix_focus_kind(self) -> str:
+        e = self._mix_focus_entry()
+        return e.kind if e is not None else ""
+
+    def _mix_video_selected(self) -> bool:
+        return self._mix_focus_kind() == "video"
+
+    def _select_mix_row(self, i: int):
+        if hasattr(self, "list_paragraphs"):
+            self.list_paragraphs.blockSignals(True)
+            self.list_paragraphs.setCurrentRow(i)
+            self.list_paragraphs.blockSignals(False)
+
+    def _focus_mix_entry(self, i: int):
+        """카드를 고르기만 한다 (송출하지 않는다) - 동영상 카드를 키로 골랐을 때 등"""
+        self.mix_index = i
+        e = self.mix_entries[i]
+        if e.kind == "video":
+            self._mix_video_path = e.path
+        self._select_mix_row(i)
+        self._after_mix_focus(e)
+
+    def _after_mix_focus(self, e):
+        if hasattr(self, "video_bar"):
+            self.video_bar.setVisible(e.kind == "video")
+        self._update_side_panel_mode()
+        self._show_mix_notes(e)
+        self._sync_notes_popup()
+        self._update_video_bar()
+        self._update_status()
+
+    def _present_mix_entry(self, i: int, from_click: bool = True):
+        """묶음 카드 하나를 송출한다 - 종류에 따라 글자 / 그림 / 동영상"""
+        if not (0 <= i < len(self.mix_entries)):
+            return
+        e = self.mix_entries[i]
+        if e.kind == "wait":
+            self._select_mix_row(i)
+            self.statusBar().showMessage(self.t("msg_mix_waiting"), 4000)
+            return
+        if e.kind == "video":
+            if not os.path.exists(e.path):
+                QMessageBox.warning(self, self.t("item_not_found_title"), self.t("item_not_found_msg", e.path))
+                return
+            self.mix_index = i
+            self._mix_video_path = e.path
+            self._select_mix_row(i)
+            self._video_play_toggle(from_click=from_click)
+            self._after_mix_focus(e)
+            return
+        if e.kind in ("slide", "image") and not os.path.exists(e.path):
+            self.statusBar().showMessage(self.t("msg_slide_not_ready"), 2000)
+            return
+        if getattr(self, "_show_mode_active", False):
+            self._stop_slideshow(silent=True, resume_export=False)
+        self.mix_index = i
+        if e.kind == "text":
+            self._mix_show_text(e.title)
+        else:
+            self._show_image_on_screen(e.path)
+            self.current_bg_desc = f"🔗 {os.path.basename(e.path)}"
+            self._live_source_type = "folder"     # 다음에 글자를 내보낼 때 배경을 되돌리도록
+            self._live_source_path = self.current_source_path
+        self._select_mix_row(i)
+        self._after_mix_focus(e)
+
+    def _mix_show_text(self, text: str):
+        """묶음의 글 카드 송출 - 설정해 둔 배경 위에 글자를 띄운다"""
+        live_type = getattr(self, "_live_source_type", "text")
+        self._stop_content_video_if_active()
+        if not self.presenter.isVisible():
+            self.presenter.show()
+        if live_type == "folder" or self._bg_needs_restore or self._folder_replaced_bg:
+            # 사진·슬라이드가 덮어쓴 배경을 원래 배경으로 되돌린다
+            self._restore_configured_background()
+        self.presenter.set_text(text)
+        self.preview.set_text(text)
+        self._live_source_type = "text"
+        self._live_source_path = self.current_source_path
+
+    def _show_mix_notes(self, e):
+        """슬라이드 노트 / 사진 속 숨은 글을 노트 칸에 (글·동영상 카드는 노트 칸을 쓰지 않는다)"""
+        if e.kind == "slide":
+            note = e.note or ""
+            label = f"📊 {self.t('slide_prefix')} {e.index + 1}"
+            name = os.path.basename(e.source)
+        elif e.kind == "image":
+            note = image_notes.read_note(e.path)
+            label = f"🖼 {self.t('image_prefix')}"
+            name = os.path.basename(e.path)
+        else:
+            return
+        # 노트 칸 머리는 짧게 (오른쪽 칸이 좁아도 글자 크기 칸이 밀리지 않게) - 파일 이름은 풍선 도움말과 노트 창에
+        self.txt_slide_notes.setPlainText(note)
+        self.lbl_notes_slide.setText(label)
+        self.lbl_notes_slide.setToolTip(name)
+        self._notes_shown_index = -1
+
+    def _mix_step(self, forward: bool):
+        """다음 / 앞 카드 (아직 준비 중인 PPT 자리는 건너뛴다)"""
+        if getattr(self, "_show_mode_active", False):
+            self._slide_step(forward)
+            return
+        i = self.mix_index
+        step = 1 if forward else -1
+        while True:
+            i += step
+            if not (0 <= i < len(self.mix_entries)):
+                return
+            if self.mix_entries[i].kind != "wait":
+                break
+        if self.mix_entries[i].kind == "video":
+            # 동영상은 키로 넘어왔을 때 곧바로 재생하지 않는다 (스페이스/엔터로 재생)
+            self._focus_mix_entry(i)
+        else:
+            self._present_mix_entry(i, from_click=False)
+
+    def _mix_handle_key(self, key) -> bool:
+        next_keys = (Qt.Key.Key_Space, Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown,
+                     Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        prev_keys = (Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_PageUp, Qt.Key.Key_Backspace)
+        e = self._mix_focus_entry()
+        if e is not None and e.kind == "video" and key in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._mix_video_path = e.path
+            self._video_play_toggle()
+            self._after_mix_focus(e)
+            return True
+        if key in next_keys:
+            self._mix_step(True)
+            return True
+        if key in prev_keys:
+            self._mix_step(False)
+            return True
+        return False
+
+    def _handle_mix_drag_event(self, event) -> bool:
+        """묶음 카드: 누르고 끌면 순서 바꾸기(종류가 달라도), 그냥 누르면 송출"""
+        et = event.type()
+        try:
+            pos = event.position().toPoint()
+        except AttributeError:
+            pos = event.pos()
+        if et == QEvent.Type.MouseButtonPress:
+            if event.button() != Qt.MouseButton.LeftButton:
+                return False
+            item = self.list_paragraphs.itemAt(pos)
+            if item is None or item.data(USER_ROLE_INDEX) is None:
+                return False
+            self._mix_drag_from = item.data(USER_ROLE_INDEX)
+            self._mix_drag_start = pos
+            self._mix_dragging = False
+            return True
+        if et == QEvent.Type.MouseMove:
+            if self._mix_drag_from is None or not (event.buttons() & Qt.MouseButton.LeftButton):
+                return False
+            if not self._mix_dragging:
+                if (pos - self._mix_drag_start).manhattanLength() < QApplication.startDragDistance():
+                    return True
+                self._mix_dragging = True
+                self.list_paragraphs.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self._mix_autoscroll_check(pos)
+            self._mix_drag_to(pos)
+            return True
+        if et == QEvent.Type.MouseButtonRelease:
+            if self._mix_drag_from is None:
+                return False
+            was_dragging, idx = self._mix_dragging, self._mix_drag_from
+            self._mix_drag_from = None
+            self._mix_dragging = False
+            self._mix_drag_start = None
+            self._mix_scroll_step = 0
+            try:
+                self.list_paragraphs.unsetCursor()
+            except RuntimeError:
+                pass
+            if was_dragging:
+                # 순서는 곧바로 묶음 파일에 저장한다 (원본 파일은 바뀌지 않는다)
+                try:
+                    mix_bundle.save_order(self.current_source_path, self.mix_entries)
+                except OSError as e:
+                    self.statusBar().showMessage(str(e), 5000)
+                self._select_mix_row(self.mix_index)
+            else:
+                self._present_mix_entry(idx)
+            return True
+        return False
+
+    def _mix_drag_to(self, pos):
+        """끌고 있는 카드를 마우스 아래 카드 자리로 옮긴다"""
+        if self._mix_drag_from is None:
+            return
+        target = self.list_paragraphs.itemAt(pos)
+        if target is None or target.data(USER_ROLE_INDEX) is None:
+            return
+        to, frm = target.data(USER_ROLE_INDEX), self._mix_drag_from
+        if to == frm or not (0 <= frm < len(self.mix_entries)) or not (0 <= to < len(self.mix_entries)):
+            return
+        bar = self.list_paragraphs.verticalScrollBar()
+        keep_scroll = bar.value()
+        moving = self.mix_entries.pop(frm)
+        self.mix_entries.insert(to, moving)
+        # 지금 고른(송출 중인) 카드가 함께 따라가도록
+        if self.mix_index == frm:
+            self.mix_index = to
+        elif frm < self.mix_index <= to:
+            self.mix_index -= 1
+        elif to <= self.mix_index < frm:
+            self.mix_index += 1
+        self._mix_drag_from = to
+        # 목록 전체를 다시 만들지 않고 카드 하나만 옮긴다 (그림이 깜빡이지 않게)
+        lst = self.list_paragraphs
+        lst.blockSignals(True)
+        item = lst.takeItem(frm)
+        lst.insertItem(to, item)
+        for r in range(lst.count()):
+            lst.item(r).setData(USER_ROLE_INDEX, r)
+        lst.blockSignals(False)
+        self._select_mix_row(to)
+        bar.setValue(keep_scroll)          # 보던 자리 그대로
+
+    def _mix_autoscroll_check(self, pos):
+        """끄는 중에 목록 위·아래 가장자리에 가면 저절로 굴린다 (안 보이는 자리로도 옮길 수 있게)"""
+        h = self.list_paragraphs.viewport().height()
+        edge = 40
+        if pos.y() < edge:
+            self._mix_scroll_step = -max(8, (edge - pos.y()) // 2)
+        elif pos.y() > h - edge:
+            self._mix_scroll_step = max(8, (pos.y() - (h - edge)) // 2)
+        else:
+            self._mix_scroll_step = 0
+        if self._mix_scroll_step and not self._mix_scroll_timer.isActive():
+            self._mix_scroll_timer.start()
+
+    def _mix_autoscroll_tick(self):
+        if not self._mix_dragging or not self._mix_scroll_step:
+            self._mix_scroll_timer.stop()
+            return
+        bar = self.list_paragraphs.verticalScrollBar()
+        before = bar.value()
+        bar.setValue(before + self._mix_scroll_step)
+        if bar.value() == before:
+            self._mix_scroll_timer.stop()
+            return
+        self._mix_drag_to(self.list_paragraphs.viewport().mapFromGlobal(QCursor.pos()))
+
+    def _edit_mix_image_note(self, idx: int = None):
+        if idx is None:
+            row = self.list_paragraphs.currentRow() if hasattr(self, "list_paragraphs") else -1
+            idx = row if 0 <= row < len(self.mix_entries) else self.mix_index
+        if not (0 <= idx < len(self.mix_entries)) or self.mix_entries[idx].kind != "image":
+            QMessageBox.information(self, self.t("btn_image_note_edit"), self.t("image_note_pick_first"))
+            return
+        e = self.mix_entries[idx]
+        if not image_notes.can_store(e.path):
+            QMessageBox.information(self, self.t("btn_image_note_edit"),
+                                    self.t("image_note_unsupported", os.path.splitext(e.path)[1].lower() or "?"))
+            return
+        if self._image_note_dialog_for(e.path) is None:
+            return
+        if idx == self.mix_index:
+            self._show_mix_notes(e)
+            self._sync_notes_popup()
+
+    # --- 왼쪽 목록: 겹쳐서 묶기 / 묶음 풀기 ---
+    def _on_library_items_merged(self, sources: list, target: str):
+        sources = [p for p in sources if p and p != target]
+        if not sources or not target:
+            return
+        library = self._get_registered_text_files()
+        # 겹친 대상의 카드들 → 끌어 온 것들의 카드들 순서로 (묶음은 섞어 둔 순서 그대로)
+        order = []
+        for src in [target] + sources:
+            order += [k for k in self._arranged_keys(src) if k not in order]
+        try:
+            if mix_bundle.is_mix_file(target):
+                mix_bundle.add_sources(target, sources)
+                mix_path = target
+                message = "msg_mix_added"
+            else:
+                mix_path = mix_bundle.create_mix(self._settings_dir, [target] + sources)
+                message = "msg_mix_created"
+            data = mix_bundle.load_mix(mix_path)
+            data["order"] = order
+            mix_bundle.save_mix(mix_path, data)
+        except OSError as e:
+            QMessageBox.warning(self, self.t("notice"), str(e))
+            return
+        new_library = []
+        for p in library:
+            if p == target:
+                new_library.append(mix_path)
+            elif p in sources:
+                continue
+            else:
+                new_library.append(p)
+        if mix_path not in new_library:
+            new_library.append(mix_path)
+        self._save_registered_text_files(new_library)
+        self._refresh_text_files_list(select_path=mix_path)
+        self._load_mix(mix_path)
+        self.statusBar().showMessage(self.t(message, self.media_source_name), 6000)
+
+    def _arranged_keys(self, path: str) -> list:
+        """파일(또는 묶음) 하나의 카드 순서 - 묶음이면 섞어 둔 순서, 파일이면 원래 순서"""
+        readers = self._mix_readers()
+        if mix_bundle.is_mix_file(path):
+            return [e.key for e in mix_bundle.build_entries(mix_bundle.load_mix(path), **readers)]
+        return [e.key for e in mix_bundle.source_entries(path, **readers)]
+
+    def _on_library_context_menu(self, pos):
+        item = self.list_text_files.itemAt(pos)
+        if item is None:
+            return
+        path = item.data(USER_ROLE_PATH)
+        menu = QMenu(self)
+        if mix_bundle.is_mix_file(path):
+            act = menu.addAction(self.t("mix_menu_ungroup"))
+            if menu.exec(self.list_text_files.viewport().mapToGlobal(pos)) is act:
+                QTimer.singleShot(0, lambda: self._ungroup_mix(path))
+        else:
+            hint = menu.addAction(self.t("mix_menu_hint"))
+            hint.setEnabled(False)
+            menu.exec(self.list_text_files.viewport().mapToGlobal(pos))
+
+    def _ungroup_mix(self, path: str):
+        """묶음을 풀어 원래 파일들을 그 자리에 되돌려 놓는다 (묶음 파일은 남겨 둔다)"""
+        data = mix_bundle.load_mix(path)
+        library = self._get_registered_text_files()
+        if path not in library:
+            return
+        at = library.index(path)
+        rest = [p for p in library if p != path]
+        back = [p for p in data["sources"] if p not in rest and os.path.exists(p)]
+        new_library = rest[:at] + back + rest[at:]
+        self._save_registered_text_files(new_library)
+        self._refresh_text_files_list(select_path=back[0] if back else "")
+        if getattr(self, "current_source_path", "") == path and back:
+            first = back[0]
+            if os.path.isdir(first):
+                self._load_image_folder(first, broadcast=False)
+            elif ppt_engine.is_ppt_file(first):
+                self._load_pptx(first, broadcast=False, prepare=True)
+            elif is_video_file(first):
+                self._load_video_item(first)
+            else:
+                self._load_text_file(first, broadcast=False)
+        self.statusBar().showMessage(self.t("msg_mix_ungrouped"), 4000)
 
     def _load_text_file(self, file_path: str, select_index=0, broadcast=True):
         try:
@@ -4848,7 +5488,7 @@ class MainWindow(QMainWindow):
             if widget is not None:
                 widget.setVisible(not is_video_mode)
         if hasattr(self, "video_bar"):
-            self.video_bar.setVisible(is_video_mode)
+            self.video_bar.setVisible(is_video_mode or self._mix_video_selected())
 
         self.list_paragraphs.blockSignals(True)
         self.list_paragraphs.clear()
@@ -4867,6 +5507,8 @@ class MainWindow(QMainWindow):
                 self.thread_pool.start(task)
             self.list_paragraphs.setCurrentRow(0 if self._video_is_live(path) else -1)
             self._update_video_bar()
+        elif getattr(self, "current_source_type", "text") == "mix":
+            self._fill_mix_cards()
         elif not is_text_mode:
             # 이미지 폴더 / PPT 슬라이드 그리드 모드
             is_pptx = getattr(self, "media_source_kind", "folder") == "pptx"
@@ -4959,6 +5601,11 @@ class MainWindow(QMainWindow):
 
     def _on_paragraph_list_clicked(self, item: QListWidgetItem):
         if getattr(self, "btn_edit_toggle", None) and self.btn_edit_toggle.isChecked():
+            return
+        if getattr(self, "current_source_type", "text") == "mix":
+            idx = item.data(USER_ROLE_INDEX)
+            if idx is not None and 0 <= idx < len(getattr(self, "mix_entries", [])):
+                self._present_mix_entry(idx)
             return
         if getattr(self, "current_source_type", "text") == "video":
             # 동영상 카드 = 커다란 재생 단추 (두 번 눌러도 한 번만 처리)
@@ -5083,10 +5730,28 @@ class MainWindow(QMainWindow):
             # PPT 슬라이드가 아직 내보내지는 중 (빈 화면 송출 방지 - 동영상도 그대로 둔다)
             self.statusBar().showMessage(self.t("msg_slide_not_ready"), 2000)
             return
-        # 나가고 있던 동영상은 내린다 (이 슬라이드가 새 송출 내용)
-        self._stop_content_video_if_active()
         self.media_slide_index = idx
+        self._show_image_on_screen(img_path)
+        self.current_bg_desc = self._media_slide_desc(idx)
+        if self._is_pptx_mode() or self._is_image_folder_mode():
+            self._show_slide_notes(idx)
 
+        self.list_paragraphs.blockSignals(True)
+        self.list_paragraphs.setCurrentRow(idx)
+        self.list_paragraphs.blockSignals(False)
+
+        self._live_source_type = "folder"
+        self._live_source_path = getattr(self, "current_source_path", "")
+        self._update_status()
+
+    def _show_image_on_screen(self, img_path: str):
+        """사진(또는 슬라이드 그림) 한 장을 송출 화면과 미리보기에 띄운다.
+
+        - 배경이 없는(알파 채널이 있는) PNG는 오버레이로 지금 배경 위에 겹쳐 그린다.
+        - 그 외 일반 사진은 전체 화면 슬라이드로 배경을 대체한다.
+        """
+        # 나가고 있던 동영상은 내린다 (이 사진이 새 송출 내용)
+        self._stop_content_video_if_active()
         if not self.presenter.isVisible():
             self.presenter.show()
 
@@ -5111,17 +5776,6 @@ class MainWindow(QMainWindow):
 
         self.presenter.set_text("")
         self.preview.set_text("")
-        self.current_bg_desc = self._media_slide_desc(idx)
-        if self._is_pptx_mode() or self._is_image_folder_mode():
-            self._show_slide_notes(idx)
-
-        self.list_paragraphs.blockSignals(True)
-        self.list_paragraphs.setCurrentRow(idx)
-        self.list_paragraphs.blockSignals(False)
-
-        self._live_source_type = "folder"
-        self._live_source_path = getattr(self, "current_source_path", "")
-        self._update_status()
 
     # ------------------------------------------------------------------
     # 본문 동영상 (라이브러리의 동영상 - 재생 단추를 눌러야 듀얼 화면에 나간다)
@@ -5155,6 +5809,8 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _browsed_video_path(self) -> str:
+        if getattr(self, "current_source_type", "text") == "mix":
+            return getattr(self, "_mix_video_path", "") if self._mix_video_selected() else ""
         if getattr(self, "current_source_type", "text") == "video":
             return getattr(self, "_video_browse_path", "") or getattr(self, "current_source_path", "") or ""
         return ""
@@ -5561,7 +6217,7 @@ class MainWindow(QMainWindow):
                 self._set_video_card_icon(it, icon_w, thumb_h)
             return
 
-        if getattr(self, "current_source_type", "text") == "folder":
+        if getattr(self, "current_source_type", "text") in ("folder", "mix"):
             # 16:9 그림 칸 + 아래 한 줄 이름 칸 (글자 크기에 맞춰 높이를 잡아 겹치지 않게)
             card_h, icon_w, thumb_h = ParagraphCardDelegate.media_card_size(
                 card_w, self.list_paragraphs.font())
@@ -5647,8 +6303,11 @@ class MainWindow(QMainWindow):
             # 파워포인트 애니메이션 슬라이드쇼가 화면을 차지하고 있었다면 끝내고 텍스트를 낸다
             self._stop_slideshow(silent=True, resume_export=False)
         self._stop_content_video_if_active()
-        # 동영상 화면을 보던 중이면 그 화면(카드·조작 막대)은 그대로 쓸 수 있게 둔다
-        if self.current_source_type != "video":
+        # 동영상 화면·묶음을 보던 중이면 그 화면(카드·조작 막대)은 그대로 쓸 수 있게 둔다
+        if self.current_source_type == "mix":
+            self.mix_index = -1            # 직접 쓴 글은 묶음 카드가 아니다
+            self._select_mix_row(-1)
+        elif self.current_source_type != "video":
             self.current_source_type = "direct_text"
         self.media_slide_index = -1
         if not self.presenter.isVisible():
@@ -5801,6 +6460,8 @@ class MainWindow(QMainWindow):
         """송출 미리보기 화면 클릭 시: 슬라이드 모드이면 다음으로 진행"""
         if getattr(self, "current_source_type", "text") == "folder":
             self._slide_step(True)
+        elif getattr(self, "current_source_type", "text") == "mix":
+            self._mix_step(True)
 
     def _slide_step(self, forward: bool):
         """슬라이드 넘김. 애니메이션 모드에서는 애니메이션 한 단계씩 진행한다."""
@@ -5840,6 +6501,15 @@ class MainWindow(QMainWindow):
             self._set_card_hover(None)
 
         if (hasattr(self, "list_paragraphs") and obj is self.list_paragraphs.viewport()
+                and getattr(self, "current_source_type", "text") == "mix"
+                and event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove, QEvent.Type.MouseButtonRelease)):
+            if QApplication.activeModalWidget() is not None:
+                self._mix_drag_from = None
+                self._mix_dragging = False
+            elif self._handle_mix_drag_event(event):
+                return True
+
+        if (hasattr(self, "list_paragraphs") and obj is self.list_paragraphs.viewport()
                 and getattr(self, "current_source_type", "text") == "text"
                 and getattr(self, "_para_drag_enabled", False)
                 and event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove, QEvent.Type.MouseButtonRelease)):
@@ -5867,7 +6537,7 @@ class MainWindow(QMainWindow):
                         and (obj is self.list_paragraphs or obj is self.list_paragraphs.viewport())):
                     if getattr(self, "current_source_type", "text") == "video":
                         return True   # 동영상 카드는 목록 칸 크기에 자동으로 맞춘다
-                    if (getattr(self, "current_source_type", "text") == "folder"
+                    if (getattr(self, "current_source_type", "text") in ("folder", "mix")
                             and hasattr(self, "spin_list_columns")):
                         # 휠 위로 = 썸네일을 키움(열 수를 줄임), 휠 아래로 = 썸네일을 줄임(열 수를 늘림)
                         new_cols = self.spin_list_columns.value() - step
@@ -5957,6 +6627,9 @@ class MainWindow(QMainWindow):
                 elif key in prev_keys:
                     self._slide_step(False)
                     return True
+            elif getattr(self, "current_source_type", "text") == "mix":
+                if self._mix_handle_key(key):
+                    return True
             elif getattr(self, "current_source_type", "text") == "video":
                 if self._handle_video_key(key):
                     return True
@@ -6000,6 +6673,9 @@ class MainWindow(QMainWindow):
                 return
             elif key in prev_keys:
                 self._slide_step(False)
+                return
+        elif getattr(self, "current_source_type", "text") == "mix":
+            if self._mix_handle_key(key):
                 return
         elif getattr(self, "current_source_type", "text") == "video":
             if self._handle_video_key(key):
@@ -6233,6 +6909,17 @@ class MainWindow(QMainWindow):
     def _on_paragraph_list_context_menu(self, pos):
         """문단 카드 우클릭 - 편집/삭제 메뉴 ('+' 카드에서는 뜨지 않는다).
         이미지 폴더에서는 사진 카드에 '숨은 글 편집' 메뉴를 띄운다."""
+        if getattr(self, "current_source_type", "text") == "mix":
+            item = self.list_paragraphs.itemAt(pos)
+            idx = item.data(USER_ROLE_INDEX) if item is not None else None
+            if idx is None or not (0 <= idx < len(self.mix_entries)) or self.mix_entries[idx].kind != "image":
+                return
+            menu = QMenu(self)
+            act_note = menu.addAction(self.t("image_note_menu"))
+            act_note.setEnabled(image_notes.can_store(self.mix_entries[idx].path))
+            if menu.exec(self.list_paragraphs.mapToGlobal(pos)) is act_note:
+                QTimer.singleShot(0, lambda: self._edit_mix_image_note(idx))
+            return
         if self._is_image_folder_mode():
             item = self.list_paragraphs.itemAt(pos)
             idx = item.data(USER_ROLE_INDEX) if item is not None else None
@@ -6590,6 +7277,8 @@ class MainWindow(QMainWindow):
         self.presenter.clear_text()
         self.preview.set_text("")
         self.paragraph_index = -1
+        if getattr(self, "current_source_type", "") == "mix":
+            self.mix_index = -1            # 화면이 비었으니 '송출 중인 카드'도 없다
         if hasattr(self, "list_paragraphs"):
             self.list_paragraphs.blockSignals(True)
             self.list_paragraphs.setCurrentRow(-1)
@@ -6682,9 +7371,13 @@ class MainWindow(QMainWindow):
             state_text = self.t(f"video_state_{state}") if state in ("playing", "paused", "ended") else state
             parts.append(self.t("status_video", os.path.basename(self.presenter.content_path), state_text))
         elif (getattr(self, "current_source_type", "text") == "direct_text"
-              or (getattr(self, "current_source_type", "text") == "video"
+              or (getattr(self, "current_source_type", "text") in ("video", "mix")
                   and getattr(self, "_live_source_type", "") == "direct_text")):
             parts.append(self.t("status_direct_presenting"))
+        elif (getattr(self, "current_source_type", "text") == "mix"
+              and getattr(self, "_live_source_path", "") == getattr(self, "current_source_path", "")
+              and 0 <= getattr(self, "mix_index", -1) < len(getattr(self, "mix_entries", []))):
+            parts.append(self.t("status_mix_presenting", self.mix_index + 1, len(self.mix_entries)))
         elif self.text_file_path and self.paragraph_index >= 0:
             parts.append(self.t("status_presenting", self.paragraph_index + 1, len(self.paragraphs)))
         elif not self.text_file_path or self.paragraph_index < 0:
@@ -6822,7 +7515,9 @@ class MainWindow(QMainWindow):
 
         # --- 파일/폴더 열기 (시작 시에는 방송하지 않고 빈 화면으로 대기) ---
         def _load_any_content(path: str):
-            if os.path.isdir(path):
+            if mix_bundle.is_mix_file(path):
+                self._load_mix(path)
+            elif os.path.isdir(path):
                 self._load_image_folder(path, select_index=0, broadcast=False)
             elif ppt_engine.is_ppt_file(path):
                 self._load_pptx(path, select_index=0, broadcast=False)
