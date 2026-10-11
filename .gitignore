@@ -1,0 +1,14 @@
+# 파이썬
+__pycache__/
+*.pyc
+
+# PyInstaller 빌드 결과 (build_exe.bat)
+build/
+dist/
+build_log.txt
+
+# 테스트 중에 만들어지는 화면 캡처·임시 파일
+*_grab*.png
+test_*.png
+test_*.jpg
+*.tmp

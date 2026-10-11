@@ -1,0 +1,8 @@
+PySide6
+Pillow
+opencv-python
+numpy
+pywin32; sys_platform == "win32"
+pypdfium2
+# exe 를 만들 때만 필요
+pyinstaller
