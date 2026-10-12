@@ -31,7 +31,7 @@ if "%MISSING%"=="1" goto missing_pkg
 echo.
 
 echo [3/5] Checking source files...
-python -m py_compile app.py main_window.py presenter_window.py thumbnail_utils.py text_engine.py ppt_engine.py subtitles.py music_player.py image_notes.py mix_bundle.py >> "%LOG%" 2>&1
+python -m py_compile app.py main_window.py presenter_window.py thumbnail_utils.py text_engine.py ppt_engine.py subtitles.py music_player.py image_notes.py mix_bundle.py version.py updater.py update_dialog.py >> "%LOG%" 2>&1
 if errorlevel 1 goto compile_error
 echo   OK
 echo.

@@ -41,6 +41,8 @@ import image_notes
 import mix_bundle
 import subtitles
 import ppt_engine
+from version import APP_VERSION
+from update_dialog import UpdateController
 
 # 기본 색상 팔레트 (이름, HEX)
 PRESET_COLORS = [
@@ -1732,7 +1734,7 @@ class MainWindow(QMainWindow):
         if self.current_lang not in ("ko", "en"):
             self.current_lang = "ko"
 
-        self.setWindowTitle(self.t("app_title"))
+        self.setWindowTitle(self._window_title())
 
         # 상태
         self.paragraphs = []            # 현재 텍스트 파일의 문단 리스트
@@ -1819,6 +1821,12 @@ class MainWindow(QMainWindow):
         # 음악 재생 (상단 툴바) - 플레이어는 처음 재생할 때 만들어진다
         self.music = MusicController(self)
 
+        # 새 버전 확인 (GitHub Releases) - 송출 중이면 창 대신 단추만 금색으로
+        self.updates = UpdateController(
+            self, self.settings, lambda: self.current_lang,
+            is_busy=self._is_presenting_now,
+            status=lambda msg, ms=8000: self.statusBar().showMessage(msg, ms))
+
         self._init_ui()
         self.presenter.content_frame_updated.connect(self.preview.set_content_frame)
         self.presenter.content_subtitle_changed.connect(self.preview.set_subtitle)
@@ -1847,6 +1855,9 @@ class MainWindow(QMainWindow):
         # HDMI 등 모니터가 빠졌다 다시 꽂히는 것을 감지해 듀얼 송출을 자동 복귀시킨다
         QGuiApplication.instance().screenAdded.connect(self._on_screen_added)
         QGuiApplication.instance().screenRemoved.connect(self._on_screen_removed)
+        # 업데이트 뒤 다시 켜졌는지 알리고, 켤 때 새 버전을 조용히 확인한다 (exe 일 때만)
+        self.updates.handle_startup_args(sys.argv)
+        self.updates.start_auto_check()
 
     def t(self, key: str, *args) -> str:
         text = TRANSLATIONS.get(self.current_lang, TRANSLATIONS["ko"]).get(key, key)
@@ -1861,8 +1872,33 @@ class MainWindow(QMainWindow):
             self.settings.setValue("app/language", code)
             self._retranslate_ui()
 
+    def _window_title(self) -> str:
+        return f"{self.t('app_title')}  v{APP_VERSION}"
+
+    def _is_presenting_now(self) -> bool:
+        """지금 무언가를 송출하고 있는지 (업데이트 창을 띄워도 되는지 판단)"""
+        try:
+            if getattr(self, "_show_mode_active", False):
+                return True
+            if getattr(self, "paragraph_index", -1) >= 0 or getattr(self, "media_slide_index", -1) >= 0:
+                return True
+            if getattr(self, "mix_index", -1) >= 0:
+                return True
+            if self.music.is_playing():
+                return True
+            if self.presenter.has_text() or getattr(self.presenter, "overlay_image_path", ""):
+                return True
+            player = getattr(self.presenter, "content_player", None)
+            if player is not None and player.playbackState() == player.PlaybackState.PlayingState:
+                return True
+            return False
+        except Exception:
+            return False
+
     def _retranslate_ui(self):
-        self.setWindowTitle(self.t("app_title"))
+        self.setWindowTitle(self._window_title())
+        if hasattr(self, "updates"):
+            self.updates.retranslate()
         if hasattr(self, "presenter") and self.presenter:
             self.presenter.setWindowTitle(self.t("presenter_window_title"))
         if hasattr(self, "lbl_display"):
@@ -2162,6 +2198,11 @@ class MainWindow(QMainWindow):
             self.combo_lang.setCurrentIndex(idx_lang)
         self.combo_lang.currentIndexChanged.connect(self._on_lang_changed)
         toolbar.addWidget(self.combo_lang)
+
+        toolbar.addSeparator()
+        self.btn_update = QPushButton(self)
+        toolbar.addWidget(self.btn_update)
+        self.updates.set_button(self.btn_update)
 
         # ---------- 음악 (여러 곡을 골라 차례로 재생) ----------
         # 단추가 커지고 시간 표시가 생겨 자리를 많이 차지하므로 따로 된 도구 막대에 둔다.
@@ -7590,4 +7631,6 @@ class MainWindow(QMainWindow):
         if popup is not None:
             popup.close()
         self.presenter.close()
+        # 받아 둔 새 버전이 있으면 ([끌 때 바꾸기]) 프로그램이 꺼진 뒤 바꿔 끼운다
+        self.updates.apply_on_exit()
         super().closeEvent(event)
