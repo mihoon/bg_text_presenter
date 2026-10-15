@@ -173,6 +173,8 @@ TRANSLATIONS = {
         "status_mix_presenting": "| 🔗 묶음 {0}/{1} 송출 중",
         "mix_ppt_preparing": "⏳ PPT 슬라이드를 준비하는 중…",
         "msg_mix_waiting": "이 PPT 는 아직 슬라이드를 그림으로 만드는 중입니다 - 잠시 뒤에 눌러 주세요",
+        "msg_mix_picked": "카드 {0}장을 골랐습니다 - 끌면 함께 옮겨집니다 (그냥 누르면 고르기 풀림)",
+        "msg_mix_moved": "카드 {0}장을 옮겼습니다",
         "msg_mix_created": "🔗 묶었습니다: {0}  (카드를 끌어 순서를 섞을 수 있습니다)",
         "msg_mix_added": "🔗 묶음에 넣었습니다: {0}",
         "msg_mix_ungrouped": "묶음을 풀었습니다",
@@ -490,6 +492,8 @@ TRANSLATIONS = {
         "status_mix_presenting": "| 🔗 Bundle {0}/{1} presenting",
         "mix_ppt_preparing": "⏳ Preparing PPT slides…",
         "msg_mix_waiting": "This PPT's slides are still being prepared - please try again shortly",
+        "msg_mix_picked": "{0} cards selected - drag to move them together (a plain click clears the selection)",
+        "msg_mix_moved": "Moved {0} cards",
         "msg_mix_created": "🔗 Bundled: {0}  (drag cards to mix their order)",
         "msg_mix_added": "🔗 Added to the bundle: {0}",
         "msg_mix_ungrouped": "Bundle split back into its files",
@@ -717,6 +721,7 @@ USER_ROLE_KIND = Qt.ItemDataRole.UserRole + 1
 USER_ROLE_INDEX = Qt.ItemDataRole.UserRole + 2
 USER_ROLE_THUMB = Qt.ItemDataRole.UserRole + 3
 USER_ROLE_CAPTION = Qt.ItemDataRole.UserRole + 10   # 묶음 카드 아래 이름 줄
+USER_ROLE_PICKED = Qt.ItemDataRole.UserRole + 11    # 묶음 카드: Ctrl/Shift 로 함께 고른 카드
 
 # 가운데 썸네일 그리드(이미지 폴더/PPT 슬라이드)의 원본 캐시 해상도.
 # Ctrl+휠로 카드를 키워도 확대된 썸네일이 흐려지지 않도록 실제 표시 크기보다
@@ -1504,6 +1509,19 @@ class ParagraphCardDelegate(QStyledItemDelegate):
         painter.setFont(font)
         painter.setPen(QColor("#ffffff"))
         painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, glyph)
+        if index.data(USER_ROLE_PICKED):
+            # Ctrl/Shift 로 함께 고른 카드: 금색 테두리 + ✓ (송출 중인 파란 카드와 구별)
+            painter.setPen(QPen(QColor("#ffd866"), 3))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(QRectF(option.rect).adjusted(2, 2, -2, -2), 6, 6)
+            mark = QRect(option.rect.right() - self.MEDIA_PAD - 26, option.rect.top() + self.MEDIA_PAD + 2, 24, 22)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#ffd866"))
+            painter.drawRoundedRect(QRectF(mark), 5, 5)
+            painter.setPen(QColor("#222222"))
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(mark, Qt.AlignmentFlag.AlignCenter, "✓")
         painter.restore()
 
     def _paint_media_card(self, painter: QPainter, option, index, title=None, body_text=None):
@@ -1802,6 +1820,11 @@ class MainWindow(QMainWindow):
         self._mix_drag_from = None
         self._mix_dragging = False
         self._mix_drag_start = None
+        self._mix_picked = set()        # Ctrl/Shift 로 함께 고른 카드들 (카드 key)
+        self._mix_anchor = -1           # Shift 범위 고르기의 시작 카드
+        self._mix_press_mods = Qt.KeyboardModifier.NoModifier
+        self._mix_drag_key = None       # 끌고 있는 (누른) 카드
+        self._mix_drag_group = set()    # 함께 옮기는 카드들
         self._mix_scroll_step = 0
         self._mix_scroll_timer = QTimer(self)
         self._mix_scroll_timer.setInterval(40)
@@ -4945,6 +4968,11 @@ class MainWindow(QMainWindow):
                     break
         if not same:
             self._mix_video_path = ""
+            self._mix_picked = set()
+            self._mix_anchor = -1
+        else:
+            keys = {e.key for e in self.mix_entries}
+            self._mix_picked = {k for k in getattr(self, "_mix_picked", set()) if k in keys}
         self._set_mix_title_label()
         self.settings.setValue("text/file", path)
         self.settings.setValue("text/source_type", "mix")
@@ -5010,6 +5038,7 @@ class MainWindow(QMainWindow):
             item.setData(USER_ROLE_KIND, e.kind)
             item.setData(USER_ROLE_PATH, e.path)
             item.setData(USER_ROLE_CAPTION, caption)
+            item.setData(USER_ROLE_PICKED, e.key in getattr(self, "_mix_picked", set()))
             self.list_paragraphs.addItem(item)
             if e.kind in ("slide", "image", "video") and e.path and os.path.exists(e.path):
                 task = ThumbnailTask(e.path, *SLIDE_THUMB_BASE_SIZE, badge=(e.kind == "video"))
@@ -5162,13 +5191,52 @@ class MainWindow(QMainWindow):
             return True
         return False
 
+    # --- 여러 장 고르기 (Ctrl: 하나씩 더하기·빼기, Shift: 범위) ---
+    def _mix_set_picked(self, keys):
+        self._mix_picked = set(keys)
+        lst = self.list_paragraphs
+        for r in range(lst.count()):
+            it = lst.item(r)
+            e = self.mix_entries[r] if r < len(self.mix_entries) else None
+            it.setData(USER_ROLE_PICKED, e is not None and e.key in self._mix_picked)
+        lst.viewport().update()
+
+    def _mix_pick_click(self, idx: int, mods):
+        """Ctrl/Shift 를 누른 채 카드를 눌렀을 때 - 송출하지 않고 고르기만 한다"""
+        entries = self.mix_entries
+        picked = set(self._mix_picked)
+        if not picked and 0 <= self.mix_index < len(entries) and self.mix_index != idx:
+            picked.add(entries[self.mix_index].key)     # 지금 송출 중인 카드부터 함께
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            anchor = self._mix_anchor if 0 <= self._mix_anchor < len(entries) else self.mix_index
+            if not (0 <= anchor < len(entries)):
+                anchor = idx
+            lo, hi = sorted((anchor, idx))
+            rng = {entries[i].key for i in range(lo, hi + 1)}
+            picked = (picked | rng) if mods & Qt.KeyboardModifier.ControlModifier else rng
+        else:
+            key = entries[idx].key
+            if key in picked:
+                picked.discard(key)
+            else:
+                picked.add(key)
+            self._mix_anchor = idx
+        live_key = entries[self.mix_index].key if 0 <= self.mix_index < len(entries) else None
+        if picked == {live_key}:
+            picked = set()          # 송출 중인 카드 하나만 남으면 고르기를 푼다
+        self._mix_set_picked(picked)
+        if picked:
+            self.statusBar().showMessage(self.t("msg_mix_picked", len(picked)), 5000)
+
     def _handle_mix_drag_event(self, event) -> bool:
-        """묶음 카드: 누르고 끌면 순서 바꾸기(종류가 달라도), 그냥 누르면 송출"""
+        """묶음 카드: 누르고 끌면 순서 바꾸기(종류가 달라도), 그냥 누르면 송출.
+        Ctrl/Shift 로 여러 장을 골라 두면 끌 때 함께 옮겨진다."""
         et = event.type()
         try:
             pos = event.position().toPoint()
         except AttributeError:
             pos = event.pos()
+        mod_mask = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
         if et == QEvent.Type.MouseButtonPress:
             if event.button() != Qt.MouseButton.LeftButton:
                 return False
@@ -5178,6 +5246,7 @@ class MainWindow(QMainWindow):
             self._mix_drag_from = item.data(USER_ROLE_INDEX)
             self._mix_drag_start = pos
             self._mix_dragging = False
+            self._mix_press_mods = event.modifiers() & mod_mask
             return True
         if et == QEvent.Type.MouseMove:
             if self._mix_drag_from is None or not (event.buttons() & Qt.MouseButton.LeftButton):
@@ -5185,6 +5254,7 @@ class MainWindow(QMainWindow):
             if not self._mix_dragging:
                 if (pos - self._mix_drag_start).manhattanLength() < QApplication.startDragDistance():
                     return True
+                self._mix_start_group_drag(self._mix_drag_from)
                 self._mix_dragging = True
                 self.list_paragraphs.setCursor(Qt.CursorShape.ClosedHandCursor)
             self._mix_autoscroll_check(pos)
@@ -5194,9 +5264,13 @@ class MainWindow(QMainWindow):
             if self._mix_drag_from is None:
                 return False
             was_dragging, idx = self._mix_dragging, self._mix_drag_from
+            mods = self._mix_press_mods
+            moved = len(self._mix_drag_group)
             self._mix_drag_from = None
             self._mix_dragging = False
             self._mix_drag_start = None
+            self._mix_drag_key = None
+            self._mix_drag_group = set()
             self._mix_scroll_step = 0
             try:
                 self.list_paragraphs.unsetCursor()
@@ -5209,42 +5283,89 @@ class MainWindow(QMainWindow):
                 except OSError as e:
                     self.statusBar().showMessage(str(e), 5000)
                 self._select_mix_row(self.mix_index)
+                if moved > 1:
+                    self.statusBar().showMessage(self.t("msg_mix_moved", moved), 4000)
+            elif mods and 0 <= idx < len(self.mix_entries):
+                self._mix_pick_click(idx, mods)
             else:
+                if self._mix_picked:
+                    self._mix_set_picked(set())
+                self._mix_anchor = idx
                 self._present_mix_entry(idx)
             return True
         return False
 
+    def _mix_start_group_drag(self, idx: int):
+        """끌기 시작: 고른 카드 위에서 끌면 고른 것 모두, 아니면 그 카드 하나"""
+        entries = self.mix_entries
+        if not (0 <= idx < len(entries)):
+            return
+        key = entries[idx].key
+        picked = set(self._mix_picked)
+        if self._mix_press_mods & Qt.KeyboardModifier.ControlModifier and key not in picked:
+            if not picked and 0 <= self.mix_index < len(entries) and self.mix_index != idx:
+                picked.add(entries[self.mix_index].key)
+            picked.add(key)
+        if key in picked and len(picked) > 1:
+            group = picked
+        else:
+            group = {key}
+            picked = set()
+        self._mix_set_picked(picked)
+        self._mix_drag_key = key
+        self._mix_drag_group = group
+
     def _mix_drag_to(self, pos):
-        """끌고 있는 카드를 마우스 아래 카드 자리로 옮긴다"""
+        """끌고 있는 카드(들)를 마우스 아래 카드 자리로 옮긴다.
+        여러 장이면 떨어져 있던 카드들도 한 덩어리로 모여 그 자리에 들어간다."""
         if self._mix_drag_from is None:
             return
         target = self.list_paragraphs.itemAt(pos)
         if target is None or target.data(USER_ROLE_INDEX) is None:
             return
-        to, frm = target.data(USER_ROLE_INDEX), self._mix_drag_from
-        if to == frm or not (0 <= frm < len(self.mix_entries)) or not (0 <= to < len(self.mix_entries)):
+        entries = self.mix_entries
+        to = target.data(USER_ROLE_INDEX)
+        if not (0 <= to < len(entries)):
             return
+        if not self._mix_drag_group:
+            self._mix_start_group_drag(self._mix_drag_from)
+        group = self._mix_drag_group
+        target_entry = entries[to]
+        if target_entry.key in group:
+            return
+        group_rows = [i for i, e in enumerate(entries) if e.key in group]
+        if not group_rows:
+            return
+        moving = [entries[i] for i in group_rows]
+        rest = [e for e in entries if e.key not in group]
+        r = rest.index(target_entry)
+        # 아래(뒤)로 끌면 대상 카드 뒤에, 위(앞)로 끌면 대상 카드 앞에 놓는다
+        insert_at = r + 1 if to > group_rows[0] else r
+        new_entries = rest[:insert_at] + moving + rest[insert_at:]
+        if [e.key for e in new_entries] == [e.key for e in entries]:
+            return
+        focus_key = entries[self.mix_index].key if 0 <= self.mix_index < len(entries) else None
         bar = self.list_paragraphs.verticalScrollBar()
         keep_scroll = bar.value()
-        moving = self.mix_entries.pop(frm)
-        self.mix_entries.insert(to, moving)
-        # 지금 고른(송출 중인) 카드가 함께 따라가도록
-        if self.mix_index == frm:
-            self.mix_index = to
-        elif frm < self.mix_index <= to:
-            self.mix_index -= 1
-        elif to <= self.mix_index < frm:
-            self.mix_index += 1
-        self._mix_drag_from = to
-        # 목록 전체를 다시 만들지 않고 카드 하나만 옮긴다 (그림이 깜빡이지 않게)
+        # 목록 전체를 다시 만들지 않고 카드만 옮긴다 (그림이 깜빡이지 않게)
         lst = self.list_paragraphs
         lst.blockSignals(True)
-        item = lst.takeItem(frm)
-        lst.insertItem(to, item)
-        for r in range(lst.count()):
-            lst.item(r).setData(USER_ROLE_INDEX, r)
+        taken = [lst.takeItem(i) for i in reversed(group_rows)]
+        taken.reverse()
+        for k, item in enumerate(taken):
+            lst.insertItem(insert_at + k, item)
+        for r2 in range(lst.count()):
+            lst.item(r2).setData(USER_ROLE_INDEX, r2)
         lst.blockSignals(False)
-        self._select_mix_row(to)
+        self.mix_entries = new_entries
+        # 지금 고른(송출 중인) 카드가 함께 따라가도록
+        self.mix_index = next((i for i, e in enumerate(new_entries) if e.key == focus_key), -1)
+        self._mix_drag_from = next(i for i, e in enumerate(new_entries) if e.key == self._mix_drag_key)
+        self._mix_anchor = self._mix_drag_from
+        if len(group) == 1:
+            self._select_mix_row(self._mix_drag_from)
+        else:
+            self._select_mix_row(self.mix_index)
         bar.setValue(keep_scroll)          # 보던 자리 그대로
 
     def _mix_autoscroll_check(self, pos):

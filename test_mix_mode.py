@@ -199,6 +199,71 @@ def main():
     with open(text, encoding="utf-8") as f:
         check("원본 텍스트 파일은 그대로", f.read().startswith("주 하나님"))
 
+    print("\n5-A) Ctrl/Shift 로 여러 장 골라 함께 옮기기")
+    CTRL, SHIFT, NOMOD = (Qt.KeyboardModifier.ControlModifier, Qt.KeyboardModifier.ShiftModifier,
+                          Qt.KeyboardModifier.NoModifier)
+
+    def click(i, mods=NOMOD):
+        p = center(i)
+        QTest.mousePress(view, Qt.MouseButton.LeftButton, mods, p)
+        QTest.mouseRelease(view, Qt.MouseButton.LeftButton, mods, p)
+        pump(0.15)
+
+    def drag(i, j, mods=NOMOD):
+        a, b = center(i), center(j)
+        QTest.mousePress(view, Qt.MouseButton.LeftButton, mods, a)
+        for t in (0.3, 0.6, 1.0):
+            QTest.mouseMove(view, QPoint(int(a.x() + (b.x() - a.x()) * t), int(a.y() + (b.y() - a.y()) * t)))
+            pump(0.05)
+        QTest.mouseRelease(view, Qt.MouseButton.LeftButton, mods, b)
+        pump(0.3)
+
+    def picked_rows():
+        return [r for r in range(w.list_paragraphs.count()) if w.list_paragraphs.item(r).data(USER_ROLE_PICKED)]
+
+    from main_window import USER_ROLE_PICKED
+    live_before = w.mix_index
+    order0 = [e.key for e in w.mix_entries]
+    click(4, CTRL)
+    click(6, CTRL)
+    check("Ctrl 로 누르면 송출하지 않고 고르기만", w.mix_index == live_before)
+    check("송출 중 카드 + Ctrl 로 누른 2장 = 3장 고름 (금색 표시)",
+          sorted(picked_rows()) == sorted({live_before, 4, 6}), str(picked_rows()))
+    click(4, CTRL)
+    check("Ctrl 로 다시 누르면 빠짐", sorted(picked_rows()) == sorted({live_before, 6}), str(picked_rows()))
+    click(4, CTRL)
+    group = [order0[i] for i in sorted({live_before, 4, 6})]
+    drag(6, 0)
+    keys = [e.key for e in w.mix_entries]
+    check("고른 카드들이 한 덩어리로 맨 앞에 (원래 순서 유지)", keys[:3] == group, str([k.split(chr(9))[0] for k in keys]))
+    check("나머지 카드 순서는 그대로", keys[3:] == [k for k in order0 if k not in group])
+    check("끌어 옮겨도 송출하지 않음 / 송출 중 카드가 따라감",
+          w.mix_entries[w.mix_index].key == order0[live_before], str(w.mix_index))
+    check("옮긴 순서가 묶음 파일에 저장됨", mix_bundle.load_mix(mix_path)["order"] == keys)
+    check("옮긴 뒤에도 고른 표시 유지 (한 번 더 옮길 수 있게)", picked_rows() == [0, 1, 2], str(picked_rows()))
+    drag(1, 6)
+    keys2 = [e.key for e in w.mix_entries]
+    check("다시 끌면 덩어리째 뒤로", keys2[4:7] == group and keys2[:4] == keys[3:7], str([k.split(chr(9))[0] for k in keys2]))
+
+    # 그냥 누르면 고르기가 풀리고 그 카드만 송출
+    target = next(i for i, e in enumerate(w.mix_entries) if e.kind in ("text", "image") and e.key not in group)
+    click(target)
+    check("그냥 누르면 고르기 풀림 + 송출", picked_rows() == [] and w.mix_index == target)
+    # Shift: 지금 카드부터 누른 카드까지
+    end_row = min(target + 2, len(w.mix_entries) - 1)
+    click(end_row, SHIFT)
+    check("Shift 로 누르면 범위를 고름 (송출하지 않음)",
+          picked_rows() == list(range(target, end_row + 1)) and w.mix_index == target, str(picked_rows()))
+    # 고르지 않은 카드를 끌면 그 카드 하나만 옮겨지고 고르기는 풀림
+    single_from = next(i for i in range(len(w.mix_entries)) if i not in picked_rows())
+    one_key = w.mix_entries[single_from].key
+    drag(single_from, len(w.mix_entries) - 1)
+    check("고르지 않은 카드를 끌면 그 카드 하나만", w.mix_entries[-1].key == one_key and picked_rows() == [],
+          str(picked_rows()))
+    mix_bundle.save_order(mix_path, [next(e for e in w.mix_entries if e.key == k) for k in after])
+    w._load_mix(mix_path)
+    pump(0.2)
+
     print("\n5-1) 안 보이는 자리로 끌면 목록이 저절로 굴러감")
     w.spin_list_columns.setValue(1)                    # 카드가 커져서 아래 카드들은 안 보인다
     pump(0.3)
