@@ -14,6 +14,7 @@ import urllib.parse
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSize, QThreadPool, QSettings, Slot, QRect, QRectF, QEvent, Signal, QPointF, QTimer
+from PySide6.QtCore import QFileSystemWatcher
 from PySide6.QtGui import (
     QIcon, QPixmap, QImage, QColor, QPainter, QFont, QFontMetrics, QGuiApplication, QFontDatabase,
     QPen, QBrush, QPainterPath, QCursor,
@@ -33,7 +34,7 @@ from presenter_window import (
 )
 from thumbnail_utils import (
     ThumbnailTask, make_color_swatch_pixmap, make_checker_pixmap, IMAGE_EXTS, VIDEO_EXTS,
-    scan_folder_images, image_has_transparency, is_video_file,
+    scan_folder_images, image_has_transparency, is_video_file, image_is_readable,
 )
 from text_engine import load_text_file, join_paragraphs, split_paragraphs
 from music_player import MusicController, MUSIC_EXTS
@@ -139,6 +140,9 @@ TRANSLATIONS = {
         "msg_ppt_cached": "저장된 슬라이드 {0}장을 바로 불러왔습니다",
         "msg_ppt_click_to_load": "PPT는 목록에서 클릭하면 슬라이드를 준비합니다",
         "msg_slide_not_ready": "이 슬라이드는 아직 준비 중입니다",
+        "msg_image_unreadable": "이 사진을 아직 읽을 수 없습니다 (저장·동기화 중일 수 있음) - 화면은 그대로 두었습니다. 잠시 뒤 다시 눌러 주세요",
+        "msg_folder_reloaded": "📁 폴더 안의 사진이 바뀌어 다시 읽었습니다 ({0}장)",
+        "msg_folder_missing": "📁 폴더를 찾을 수 없습니다 - 다시 생기면 저절로 읽습니다",
         "msg_ppt_opening_for_edit": "{0}번 슬라이드를 편집할 수 있도록 파워포인트를 새 창으로 엽니다…",
         "msg_ppt_edit_open_failed": "편집용 파워포인트를 여는 데 실패했습니다: {0}",
         "msg_ppt_edit_opened_as_copy": "임시 복사본으로 열었습니다 — 저장(Ctrl+S)하면 원본에 자동 반영됩니다",
@@ -458,6 +462,9 @@ TRANSLATIONS = {
         "msg_ppt_cached": "Loaded {0} cached slides instantly",
         "msg_ppt_click_to_load": "Click the PPT in the list to prepare its slides",
         "msg_slide_not_ready": "This slide is still being prepared",
+        "msg_image_unreadable": "This image cannot be read yet (it may still be saving or syncing) - the screen was left as it is. Please try again shortly",
+        "msg_folder_reloaded": "📁 The images in the folder changed and were reloaded ({0})",
+        "msg_folder_missing": "📁 The folder is missing - it will be reloaded automatically when it comes back",
         "msg_ppt_opening_for_edit": "Opening PowerPoint in a new window at slide {0} for editing…",
         "msg_ppt_edit_open_failed": "Failed to open PowerPoint for editing: {0}",
         "msg_ppt_edit_opened_as_copy": "Opened a temporary copy — saving (Ctrl+S) will sync back to the original automatically",
@@ -1820,6 +1827,16 @@ class MainWindow(QMainWindow):
         self._mix_drag_from = None
         self._mix_dragging = False
         self._mix_drag_start = None
+        # 이미지 폴더 지켜보기: 폴더를 지웠다 다시 만들거나, 사진을 새로 내보내거나,
+        # 구글 드라이브가 나중에 파일을 다시 써 넣어도 목록·썸네일·송출 화면을 새로 고친다
+        self._folder_watcher = QFileSystemWatcher(self)
+        self._folder_watcher.directoryChanged.connect(self._on_watched_folder_changed)
+        self._folder_watch_timer = QTimer(self)
+        self._folder_watch_timer.setSingleShot(True)
+        self._folder_watch_timer.setInterval(1200)      # 여러 파일이 연달아 바뀌면 다 끝난 뒤 한 번만
+        self._folder_watch_timer.timeout.connect(self._refresh_image_folder)
+        self._folder_snapshot = {}
+        self._thumb_retries = {}
         self._mix_picked = set()        # Ctrl/Shift 로 함께 고른 카드들 (카드 key)
         self._mix_anchor = -1           # Shift 범위 고르기의 시작 카드
         self._mix_press_mods = Qt.KeyboardModifier.NoModifier
@@ -5564,6 +5581,7 @@ class MainWindow(QMainWindow):
         self.media_slides = images
         self.media_notes = [None] * len(images)     # 사진 속 숨은 글 (읽으면 채워진다)
         self.media_slide_index = -1
+        self._watch_image_folder(folder_path, images)
         self._update_side_panel_mode()
         if not self.presenter.isVisible():
             self.presenter.show()
@@ -5731,7 +5749,13 @@ class MainWindow(QMainWindow):
     @Slot(str, str)
     def _on_slide_thumb_ready(self, file_path: str, thumb_path: str):
         if not thumb_path or not os.path.exists(thumb_path):
+            # 아직 저장·동기화 중이라 읽지 못한 사진 - 조금 뒤에 몇 번 더 해 본다
+            tries = self._thumb_retries.get(file_path, 0)
+            if tries < 5 and file_path in self._listed_card_paths():
+                self._thumb_retries[file_path] = tries + 1
+                QTimer.singleShot(1500 * (tries + 1), lambda p=file_path: self._retry_thumb(p))
             return
+        self._thumb_retries.pop(file_path, None)
         if not hasattr(self, "list_paragraphs"):
             return
         for i in range(self.list_paragraphs.count()):
@@ -5836,6 +5860,98 @@ class MainWindow(QMainWindow):
         self._load_pptx(original_path, select_index=keep_index, broadcast=False, prepare=True)
         self.statusBar().showMessage(self.t("msg_ppt_edit_synced"), 4000)
 
+    # ------------------------------------------------------------------
+    # 이미지 폴더 지켜보기 (지웠다 다시 만들기 / 다시 내보내기 / 동기화)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _folder_stat_snapshot(images):
+        snap = {}
+        for p in images:
+            try:
+                st = os.stat(p)
+                snap[p] = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                pass
+        return snap
+
+    def _watch_image_folder(self, folder: str, images=None):
+        """폴더와 그 위 폴더를 지켜본다 (폴더째 지웠다 다시 만들어도 알 수 있게)"""
+        w = self._folder_watcher
+        old = w.directories()
+        if old:
+            w.removePaths(old)
+        for p in (folder, os.path.dirname(folder.rstrip("\\/"))):
+            if p and os.path.isdir(p):
+                w.addPath(p)
+        self._watched_folder = folder
+        self._folder_snapshot = self._folder_stat_snapshot(images if images is not None else self.media_slides)
+
+    def _on_watched_folder_changed(self, _path=""):
+        if self._is_image_folder_mode() and getattr(self, "current_source_path", "") == getattr(self, "_watched_folder", None):
+            self._folder_watch_timer.start()
+
+    def _listed_card_paths(self):
+        lst = getattr(self, "list_paragraphs", None)
+        if lst is None:
+            return set()
+        return {lst.item(r).data(USER_ROLE_PATH) for r in range(lst.count())}
+
+    def _retry_thumb(self, path: str):
+        if path not in self._listed_card_paths() or not os.path.exists(path):
+            return
+        task = ThumbnailTask(path, *SLIDE_THUMB_BASE_SIZE)
+        task.signals.finished.connect(self._on_slide_thumb_ready)
+        self.thread_pool.start(task)
+
+    def _refresh_image_folder(self):
+        """지켜보던 폴더가 바뀌었을 때: 바뀐 사진만 썸네일·노트를 다시 읽고, 송출 중인 사진이 바뀌었으면 다시 띄운다"""
+        folder = getattr(self, "current_source_path", "")
+        if not self._is_image_folder_mode() or folder != getattr(self, "_watched_folder", None):
+            return
+        # 폴더가 지워졌다 다시 생기면 지켜보기 목록에서 빠져 있으므로 다시 넣는다
+        for p in (folder, os.path.dirname(folder.rstrip("\\/"))):
+            if p and os.path.isdir(p) and p not in self._folder_watcher.directories():
+                self._folder_watcher.addPath(p)
+        images = scan_folder_images(folder)
+        snap = self._folder_stat_snapshot(images)
+        if snap == self._folder_snapshot and images == self.media_slides:
+            return
+        old_snap = self._folder_snapshot
+        if not images:
+            self._folder_snapshot = snap
+            self.statusBar().showMessage(self.t("msg_folder_missing"), 8000)
+            return
+        live_path = (self.media_slides[self.media_slide_index]
+                     if 0 <= self.media_slide_index < len(self.media_slides) else None)
+        if images == self.media_slides:
+            changed = [i for i, p in enumerate(images) if old_snap.get(p) != snap.get(p)]
+            for i in changed:
+                self.media_notes[i] = None
+                self._thumb_retries.pop(images[i], None)
+                self._retry_thumb(images[i])
+                self._image_note(i)
+                self._refresh_image_card_title(i)
+        else:
+            changed = list(range(len(images)))
+            self.media_slides = images
+            self.media_notes = [None] * len(images)
+            self.media_slide_index = images.index(live_path) if live_path in images else -1
+            try:
+                self.lbl_txt_file.setText(f"📁 {os.path.basename(folder)} ({len(images)}{self.t('items_count_suffix')})")
+            except RuntimeError:
+                pass
+            self._rebuild_paragraph_list()
+            self._scan_image_notes()
+        self._folder_snapshot = snap
+        self.statusBar().showMessage(self.t("msg_folder_reloaded", len(images)), 6000)
+        # 송출 중인 사진 파일이 새로 바뀌었으면 화면도 새 그림으로 (읽을 수 있을 때만)
+        idx = self.media_slide_index
+        on_air = (getattr(self, "_live_source_type", "") == "folder"
+                  and getattr(self, "_live_source_path", "") == folder
+                  and not getattr(self, "_show_mode_active", False))
+        if on_air and 0 <= idx < len(images) and idx in changed and image_is_readable(images[idx]):
+            self._present_media_slide(idx)
+
     def _present_media_slide(self, idx: int):
         """이미지 폴더의 사진을 송출 및 미리보기에 표시
 
@@ -5891,6 +6007,14 @@ class MainWindow(QMainWindow):
         if not os.path.exists(img_path):
             # PPT 슬라이드가 아직 내보내지는 중 (빈 화면 송출 방지 - 동영상도 그대로 둔다)
             self.statusBar().showMessage(self.t("msg_slide_not_ready"), 2000)
+            if self._is_image_folder_mode():
+                self._folder_watch_timer.start()     # 폴더가 다시 만들어졌을 수 있다 - 다시 읽어 본다
+            return
+        if not image_is_readable(img_path):
+            # 저장·동기화 중이라 아직 읽을 수 없는 사진 - 까만 화면을 내보내지 않고 지금 화면을 그대로 둔다
+            self.statusBar().showMessage(self.t("msg_image_unreadable"), 6000)
+            if self._is_image_folder_mode():
+                self._folder_watch_timer.start()
             return
         self.media_slide_index = idx
         self._show_image_on_screen(img_path)

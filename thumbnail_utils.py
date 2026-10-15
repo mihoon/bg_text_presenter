@@ -112,6 +112,22 @@ def get_thumbnail(file_path: str, width=96, height=72, badge=True) -> str:
     return ""
 
 
+def image_is_readable(file_path: str) -> bool:
+    """그림을 실제로 읽을 수 있는지 (저장·동기화 중이라 아직 비어 있거나 잠긴 파일을 거른다).
+    작게 줄여 읽으므로(JPEG 는 1/8 로 풀기) 큰 사진도 빠르다."""
+    try:
+        from PySide6.QtGui import QImageReader
+        from PySide6.QtCore import QSize
+        reader = QImageReader(file_path)
+        size = reader.size()
+        if not size.isValid() or size.width() <= 0:
+            return False
+        reader.setScaledSize(QSize(max(1, size.width() // 8), max(1, size.height() // 8)))
+        return not reader.read().isNull()
+    except Exception:
+        return False
+
+
 def is_video_file(path) -> bool:
     return bool(path) and os.path.splitext(str(path))[1].lower() in VIDEO_EXTS
 
