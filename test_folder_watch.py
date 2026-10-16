@@ -22,6 +22,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PIL import Image
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QEventLoop
+from thumbnail_utils import scan_folder_images as scan_folder
 
 FAILURES = []
 
@@ -116,6 +117,67 @@ def main():
     write_slides(folder, [(250, 0, 0), (0, 250, 0)])
     check("다시 생기면 저절로 읽음 (2장)", wait(lambda: len(w.media_slides) == 2 and all(thumbs()) and len(thumbs()) == 2),
           str(len(w.media_slides)))
+
+    print("\n5) 이름·크기·수정 시각이 똑같은 새 파일도 다른 파일로 봄 (썸네일 저장분을 다시 쓰지 않음)")
+    import thumbnail_utils as tu
+    p1 = os.path.join(folder, "Slide_01.jpg")
+    st = os.stat(p1)
+    key_before = tu._get_cache_path(p1, 480, 270)
+    data = open(p1, "rb").read()
+    os.remove(p1)
+    with open(p1, "wb") as f:                     # 같은 크기, 같은 이름
+        f.write(data[:-3] + b"\x00\x00\xd9" if data.endswith(b"\xff\xd9") else data)
+    os.utime(p1, ns=(st.st_atime_ns, st.st_mtime_ns))  # 수정 시각까지 똑같이
+    check("다시 만든 파일은 썸네일 저장 이름이 다름", tu._get_cache_path(p1, 480, 270) != key_before)
+
+    print("\n6) Qt 가 못 읽는 그림은 PIL 로 대신 읽어 송출")
+    orig_qt = tu.qt_read_image
+    tu.qt_read_image = lambda *a, **k: (None, "시험용 실패")
+    tu._DISPLAY_CACHE.clear()
+    try:
+        w._present_media_slide(0)
+        pump(0.2)
+        check("Qt 실패해도 화면에 나옴", w.media_slide_index == 0 and screen_color() == (250 // 32, 0, 0),
+              str(screen_color()))
+    finally:
+        tu.qt_read_image = orig_qt
+
+    print("\n7) 큰 사진은 송출 화면 크기로 줄여서 읽음")
+    big = os.path.join(folder, "Slide_03.jpg")
+    Image.new("RGB", (5867, 3300), (0, 120, 250)).save(big, quality=85)
+    check("새 그림 반영", wait(lambda: len(w.media_slides) == 3, 6))
+    w._present_media_slide(2)
+    pump(0.3)
+    pm = w.presenter._bg_pixmap
+    lim = w.presenter._display_limit()
+    check("송출 그림은 화면 크기 이하", pm is not None and pm.width() <= lim[0] and pm.height() <= lim[1],
+          f"{pm.width() if pm else None} / {lim}")
+    check("미리보기는 1920 이하", w.preview._bg_pixmap is not None and w.preview._bg_pixmap.width() <= 1920)
+
+    print("\n8) 썸네일 일꾼이 모두 붙잡혀도 다른 카드 그림은 나옴 + 사진 다시 읽기(F5)")
+    import threading
+    gate = threading.Event()
+    orig_get = tu.get_thumbnail
+    stuck = set()
+
+    def slow_get(path, *a, **k):
+        if len(stuck) < 4 and path not in stuck:
+            stuck.add(path)
+            gate.wait(30)                         # 동기화 중인 파일처럼 오래 붙잡힘
+            return ""
+        return orig_get(path, *a, **k)
+    tu.get_thumbnail = slow_get
+    try:
+        for i in range(6):
+            Image.new("RGB", (800, 450), (40 * i, 100, 200)).save(os.path.join(folder, f"Extra_{i}.jpg"))
+        removed = tu.forget_thumbnails(scan_folder(folder), [(480, 270)])
+        w._reload_image_folder_fresh()
+        check("다시 읽기: 사진 9장", len(w.media_slides) == 9, str(len(w.media_slides)))
+        check("일꾼이 붙잡혀도 결국 모든 카드에 그림", wait(lambda: all(thumbs()) and len(thumbs()) == 9, 25), str(thumbs()))
+        check("붙잡힌 일꾼은 새 일꾼으로 바꿈", len(w._old_card_pools) >= 1)
+    finally:
+        gate.set()
+        tu.get_thumbnail = orig_get
 
     w.close()
     shutil.rmtree(_TMP, ignore_errors=True)

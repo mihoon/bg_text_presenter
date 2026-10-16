@@ -35,6 +35,7 @@ from presenter_window import (
 from thumbnail_utils import (
     ThumbnailTask, make_color_swatch_pixmap, make_checker_pixmap, IMAGE_EXTS, VIDEO_EXTS,
     scan_folder_images, image_has_transparency, is_video_file, image_is_readable,
+    load_display_pixmap, forget_thumbnails, runtime_info,
 )
 from text_engine import load_text_file, join_paragraphs, split_paragraphs
 from music_player import MusicController, MUSIC_EXTS
@@ -143,6 +144,7 @@ TRANSLATIONS = {
         "msg_image_unreadable": "이 사진을 아직 읽을 수 없습니다 (저장·동기화 중일 수 있음) - 화면은 그대로 두었습니다. 잠시 뒤 다시 눌러 주세요",
         "msg_folder_reloaded": "📁 폴더 안의 사진이 바뀌어 다시 읽었습니다 ({0}장)",
         "msg_folder_missing": "📁 폴더를 찾을 수 없습니다 - 다시 생기면 저절로 읽습니다",
+        "reload_folder_menu": "🔄 사진 다시 읽기 (썸네일 새로 만들기)  F5",
         "msg_ppt_opening_for_edit": "{0}번 슬라이드를 편집할 수 있도록 파워포인트를 새 창으로 엽니다…",
         "msg_ppt_edit_open_failed": "편집용 파워포인트를 여는 데 실패했습니다: {0}",
         "msg_ppt_edit_opened_as_copy": "임시 복사본으로 열었습니다 — 저장(Ctrl+S)하면 원본에 자동 반영됩니다",
@@ -465,6 +467,7 @@ TRANSLATIONS = {
         "msg_image_unreadable": "This image cannot be read yet (it may still be saving or syncing) - the screen was left as it is. Please try again shortly",
         "msg_folder_reloaded": "📁 The images in the folder changed and were reloaded ({0})",
         "msg_folder_missing": "📁 The folder is missing - it will be reloaded automatically when it comes back",
+        "reload_folder_menu": "🔄 Reload images (rebuild thumbnails)  F5",
         "msg_ppt_opening_for_edit": "Opening PowerPoint in a new window at slide {0} for editing…",
         "msg_ppt_edit_open_failed": "Failed to open PowerPoint for editing: {0}",
         "msg_ppt_edit_opened_as_copy": "Opened a temporary copy — saving (Ctrl+S) will sync back to the original automatically",
@@ -1111,7 +1114,7 @@ class PreviewWidget(QWidget):
         self.update()
 
     def set_bg_image(self, path: str, fit_mode="cover", transparent=None):
-        self._bg_pixmap = QPixmap(path) if path and os.path.exists(path) else None
+        self._bg_pixmap = load_display_pixmap(path, 1920, 1080)
         self._fit_mode = fit_mode
         self._video_frame = None
         if transparent is not None:
@@ -1139,7 +1142,7 @@ class PreviewWidget(QWidget):
 
     def set_overlay_image(self, file_path: str):
         """배경(동영상/이미지/색상)은 그대로 둔 채 이미지를 그 위에 겹쳐 그린다."""
-        self._overlay_pixmap = QPixmap(file_path) if file_path and os.path.exists(file_path) else None
+        self._overlay_pixmap = load_display_pixmap(file_path, 1920, 1080)
         self.update()
 
     def clear_overlay_image(self):
@@ -1745,6 +1748,13 @@ class MainWindow(QMainWindow):
 
         self.thread_pool = QThreadPool()
         self.thread_pool.setMaxThreadCount(4)
+        # 가운데 카드(사진·슬라이드) 썸네일은 따로 된 일꾼들로 만든다.
+        # 왼쪽 라이브러리 썸네일이나 읽기가 오래 걸리는 파일(동기화 중 등) 때문에
+        # 가운데 카드가 줄 서서 기다리지 않게 하고, 다른 폴더를 열면 기다리던 일은 버린다.
+        self.card_pool = QThreadPool()
+        self.card_pool.setMaxThreadCount(4)
+        self._old_card_pools = []
+        self._card_thumb_serial = 0
 
         # 설정 저장소 (%APPDATA%/BgTextPresenter/settings.ini)
         # 테스트에서는 BGPT_SETTINGS_DIR 환경변수로 별도 저장소를 쓸 수 있다.
@@ -1895,6 +1905,10 @@ class MainWindow(QMainWindow):
         # HDMI 등 모니터가 빠졌다 다시 꽂히는 것을 감지해 듀얼 송출을 자동 복귀시킨다
         QGuiApplication.instance().screenAdded.connect(self._on_screen_added)
         QGuiApplication.instance().screenRemoved.connect(self._on_screen_removed)
+        from PySide6.QtGui import QShortcut, QKeySequence
+        self._shortcut_reload = QShortcut(QKeySequence(Qt.Key.Key_F5), self)
+        self._shortcut_reload.activated.connect(self._reload_image_folder_fresh)
+        print(f"[시작] v{APP_VERSION} · {runtime_info()}")
         # 업데이트 뒤 다시 켜졌는지 알리고, 켤 때 새 버전을 조용히 확인한다 (exe 일 때만)
         self.updates.handle_startup_args(sys.argv)
         self.updates.start_auto_check()
@@ -4691,9 +4705,7 @@ class MainWindow(QMainWindow):
         if index == getattr(self, "media_slide_index", -1):
             self._show_slide_notes(index)
         if 0 <= index < len(self.media_slides):
-            task = ThumbnailTask(self.media_slides[index], *SLIDE_THUMB_BASE_SIZE)
-            task.signals.finished.connect(self._on_slide_thumb_ready)
-            self.thread_pool.start(task)
+            self._start_card_thumb(self.media_slides[index])
         total = self._ppt_total or len(self._ppt_ready)
         self.statusBar().showMessage(self.t("msg_ppt_exporting", len(self._ppt_ready), total))
 
@@ -5058,9 +5070,7 @@ class MainWindow(QMainWindow):
             item.setData(USER_ROLE_PICKED, e.key in getattr(self, "_mix_picked", set()))
             self.list_paragraphs.addItem(item)
             if e.kind in ("slide", "image", "video") and e.path and os.path.exists(e.path):
-                task = ThumbnailTask(e.path, *SLIDE_THUMB_BASE_SIZE, badge=(e.kind == "video"))
-                task.signals.finished.connect(self._on_slide_thumb_ready)
-                self.thread_pool.start(task)
+                self._start_card_thumb(e.path, badge=(e.kind == "video"))
         if 0 <= self.mix_index < self.list_paragraphs.count():
             self.list_paragraphs.setCurrentRow(self.mix_index)
         else:
@@ -5672,6 +5682,10 @@ class MainWindow(QMainWindow):
 
         self.list_paragraphs.blockSignals(True)
         self.list_paragraphs.clear()
+        self.card_pool.clear()              # 앞 폴더에서 기다리던 썸네일 일은 버린다
+        self._card_thumb_serial += 1
+        serial = self._card_thumb_serial
+        QTimer.singleShot(6000, lambda: self._check_missing_card_thumbs(serial, 1))
 
         if is_video_mode:
             # 동영상: 카드 하나 (누르면 듀얼 화면에서 재생 / 일시정지)
@@ -5682,9 +5696,7 @@ class MainWindow(QMainWindow):
             item.setToolTip(path)
             self.list_paragraphs.addItem(item)
             if path and os.path.exists(path):
-                task = ThumbnailTask(path, 960, 540, badge=False)   # 카드가 크므로 선명하게
-                task.signals.finished.connect(self._on_slide_thumb_ready)
-                self.thread_pool.start(task)
+                self._start_card_thumb(path, 960, 540, badge=False)   # 카드가 크므로 선명하게
             self.list_paragraphs.setCurrentRow(0 if self._video_is_live(path) else -1)
             self._update_video_bar()
         elif getattr(self, "current_source_type", "text") == "mix":
@@ -5704,9 +5716,7 @@ class MainWindow(QMainWindow):
                 self.list_paragraphs.addItem(item)
                 # 썸네일 비동기 로딩 (PPT는 아직 내보내지 않은 장을 건너뛴다)
                 if os.path.exists(img_path):
-                    task = ThumbnailTask(img_path, *SLIDE_THUMB_BASE_SIZE)
-                    task.signals.finished.connect(self._on_slide_thumb_ready)
-                    self.thread_pool.start(task)
+                    self._start_card_thumb(img_path)
 
             if 0 <= self.media_slide_index < self.list_paragraphs.count():
                 self.list_paragraphs.setCurrentRow(self.media_slide_index)
@@ -5899,9 +5909,75 @@ class MainWindow(QMainWindow):
     def _retry_thumb(self, path: str):
         if path not in self._listed_card_paths() or not os.path.exists(path):
             return
-        task = ThumbnailTask(path, *SLIDE_THUMB_BASE_SIZE)
+        self._start_card_thumb(path)
+
+    def _start_card_thumb(self, path: str, w: int = None, h: int = None, badge: bool = True):
+        if w is None or h is None:
+            w, h = SLIDE_THUMB_BASE_SIZE
+        task = ThumbnailTask(path, w, h, badge=badge)
         task.signals.finished.connect(self._on_slide_thumb_ready)
-        self.thread_pool.start(task)
+        self.card_pool.start(task)
+
+    def _check_missing_card_thumbs(self, serial: int, round_no: int):
+        """카드를 채운 뒤 몇 초가 지나도 그림이 안 붙은 카드가 있으면 이유를 남기고 다시 만든다.
+        일꾼들이 모두 (읽기가 멈춘 파일 때문에) 붙잡혀 있으면 새 일꾼들로 바꿔서 한다."""
+        if serial != self._card_thumb_serial or not hasattr(self, "list_paragraphs"):
+            return
+        if getattr(self, "current_source_type", "") == "text":
+            return
+        lst = self.list_paragraphs
+        missing = []
+        for r in range(lst.count()):
+            it = lst.item(r)
+            p = it.data(USER_ROLE_PATH)
+            kind = it.data(USER_ROLE_KIND)
+            if (p and not it.data(USER_ROLE_THUMB) and kind not in ("text", "wait")
+                    and os.path.splitext(str(p))[1].lower() in IMAGE_EXTS and os.path.exists(p)):
+                missing.append(p)
+        if not missing:
+            return
+        busy = self.card_pool.activeThreadCount()
+        print(f"[썸네일] {round_no}번째 확인: {len(missing)}장이 아직 그림 없음 "
+              f"(일하는 중 {busy}/{self.card_pool.maxThreadCount()}) 예: {missing[0]}")
+        if busy >= self.card_pool.maxThreadCount():
+            # 모두 붙잡혀 있다 - 새 일꾼들로 바꾼다 (붙잡힌 일꾼은 끝날 때까지 그대로 둔다)
+            self._old_card_pools.append(self.card_pool)
+            self.card_pool = QThreadPool()
+            self.card_pool.setMaxThreadCount(4)
+            print("[썸네일] 일꾼들이 모두 오래 붙잡혀 있어 새 일꾼으로 바꿨습니다")
+        else:
+            self.card_pool.clear()
+        for p in missing:
+            self._thumb_retries.pop(p, None)
+            self._start_card_thumb(p)
+        if round_no < 3:
+            QTimer.singleShot(8000, lambda: self._check_missing_card_thumbs(serial, round_no + 1))
+
+    def _reload_image_folder_fresh(self):
+        """🔄 사진 다시 읽기: 이 폴더의 썸네일·송출 그림 저장분을 지우고 폴더를 처음부터 다시 읽는다"""
+        if not self._is_image_folder_mode():
+            return
+        folder = getattr(self, "current_source_path", "")
+        live = self.media_slide_index
+        live_path = self.media_slides[live] if 0 <= live < len(self.media_slides) else None
+        removed = forget_thumbnails(self.media_slides, [SLIDE_THUMB_BASE_SIZE])
+        images = scan_folder_images(folder)
+        print(f"[썸네일] 사진 다시 읽기: {folder} - 저장분 {removed}개 지움, 사진 {len(images)}장")
+        if not images:
+            self.statusBar().showMessage(self.t("msg_folder_missing"), 8000)
+            return
+        self.media_slides = images
+        self.media_notes = [None] * len(images)
+        self.media_slide_index = images.index(live_path) if live_path in images else -1
+        self._thumb_retries = {}
+        self._watch_image_folder(folder, images)
+        try:
+            self.lbl_txt_file.setText(f"📁 {os.path.basename(folder)} ({len(images)}{self.t('items_count_suffix')})")
+        except RuntimeError:
+            pass
+        self._rebuild_paragraph_list()
+        self._scan_image_notes()
+        self.statusBar().showMessage(self.t("msg_folder_reloaded", len(images)), 6000)
 
     def _refresh_image_folder(self):
         """지켜보던 폴더가 바뀌었을 때: 바뀐 사진만 썸네일·노트를 다시 읽고, 송출 중인 사진이 바뀌었으면 다시 띄운다"""
@@ -7209,13 +7285,18 @@ class MainWindow(QMainWindow):
         if self._is_image_folder_mode():
             item = self.list_paragraphs.itemAt(pos)
             idx = item.data(USER_ROLE_INDEX) if item is not None else None
-            if idx is None or not (0 <= idx < len(self.media_slides)):
-                return
             menu = QMenu(self)
-            act_note = menu.addAction(self.t("image_note_menu"))
-            act_note.setEnabled(image_notes.can_store(self.media_slides[idx]))
-            if menu.exec(self.list_paragraphs.mapToGlobal(pos)) is act_note:
+            act_note = None
+            if idx is not None and 0 <= idx < len(self.media_slides):
+                act_note = menu.addAction(self.t("image_note_menu"))
+                act_note.setEnabled(image_notes.can_store(self.media_slides[idx]))
+                menu.addSeparator()
+            act_reload = menu.addAction(self.t("reload_folder_menu"))
+            chosen = menu.exec(self.list_paragraphs.mapToGlobal(pos))
+            if act_note is not None and chosen is act_note:
                 QTimer.singleShot(0, lambda: self._edit_image_note(idx))
+            elif chosen is act_reload:
+                QTimer.singleShot(0, self._reload_image_folder_fresh)
             return
         if getattr(self, "current_source_type", "text") != "text":
             return

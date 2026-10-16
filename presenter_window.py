@@ -19,6 +19,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
+from thumbnail_utils import load_display_pixmap
 
 
 class TextStyle:
@@ -466,8 +467,18 @@ class PresenterWindow(QWidget):
         self._stop_video_playback()
         self.bg_image_mode = fit_mode
         self.bg_image_path = file_path
-        self._bg_pixmap = QPixmap(file_path) if file_path and os.path.exists(file_path) else None
+        self._bg_pixmap = load_display_pixmap(file_path, *self._display_limit())
         self.update()
+
+    def _display_limit(self):
+        """송출 화면 크기 (그보다 큰 그림은 줄여서 읽는다)"""
+        try:
+            screen = self.screen()
+            g = screen.geometry()
+            ratio = screen.devicePixelRatio() or 1.0
+            return max(1280, int(g.width() * ratio)), max(720, int(g.height() * ratio))
+        except Exception:
+            return 3840, 2160
 
     # ---------------- 배경: 동영상 재생목록 ----------------
     def play_playlist(self, paths: list, start_index=0):
@@ -726,9 +737,7 @@ class PresenterWindow(QWidget):
         set_image_background()와 달리 재생 중인 동영상을 멈추지 않는다.
         """
         self.overlay_image_path = file_path or ""
-        self._overlay_pixmap = (
-            QPixmap(file_path) if file_path and os.path.exists(file_path) else None
-        )
+        self._overlay_pixmap = load_display_pixmap(file_path, *self._display_limit())
         self.update()
 
     def clear_overlay_image(self):

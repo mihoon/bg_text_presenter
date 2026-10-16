@@ -3,14 +3,17 @@
 이미지/동영상 썸네일 생성 및 캐싱 (dual_presenter/thumbnail_loader.py 패턴 재사용)
 """
 import os
+import time
 import hashlib
 import tempfile
+from collections import OrderedDict
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from PySide6.QtCore import QObject, Signal, QRunnable
-from PySide6.QtGui import QPixmap, QColor, QPainter
+from PySide6.QtCore import QObject, Signal, QRunnable, Qt
+from PySide6.QtGui import QPixmap, QColor, QPainter, QImage, QImageReader
+from PySide6.QtCore import QSize
 
 THUMB_CACHE_DIR = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "BgTextPresenter" / "thumb_cache"
 THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -19,9 +22,15 @@ IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.webp', '.gif', '.tiff', '.ico'}
 VIDEO_EXTS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.webm', '.flv', '.m4v', '.mpg', '.mpeg', '.ts', '.m2ts'}
 
 
+def _file_signature(file_path: str) -> str:
+    """파일을 구별하는 값. 수정 시각·크기에 더해 파일 번호(st_ino)·만든 시각까지 넣어,
+    폴더를 지우고 같은 이름으로 다시 만든 파일은 (시각·크기가 같더라도) 다른 파일로 본다."""
+    st = os.stat(file_path)
+    return f"{st.st_mtime_ns}_{st.st_size}_{getattr(st, 'st_ino', 0)}_{getattr(st, 'st_ctime_ns', 0)}"
+
+
 def _get_cache_path(file_path: str, width: int, height: int, variant: str = "") -> str:
-    stat = os.stat(file_path)
-    raw = f"{file_path}_{stat.st_mtime}_{stat.st_size}_{width}x{height}{variant}"
+    raw = f"v2_{os.path.abspath(file_path)}_{_file_signature(file_path)}_{width}x{height}{variant}"
     h = hashlib.md5(raw.encode("utf-8")).hexdigest()
     return str(THUMB_CACHE_DIR / f"{h}.png")
 
@@ -43,10 +52,113 @@ def _add_play_badge(pil_img):
     return Image.alpha_composite(pil_img.convert("RGBA"), overlay)
 
 
+def _file_info(file_path: str) -> str:
+    try:
+        st = os.stat(file_path)
+        with open(file_path, "rb") as f:
+            head = f.read(4).hex()
+        return f"{st.st_size}바이트, 머리 {head}"
+    except Exception as e:
+        return f"열 수 없음: {e.__class__.__name__}: {e}"
+
+
+def qt_read_image(file_path: str, max_w: int = 0, max_h: int = 0):
+    """Qt 로 그림 읽기 (큰 그림은 읽으면서 줄인다 - JPEG 는 빠르게 줄여 푼다). 실패하면 (None, 이유)"""
+    reader = QImageReader(file_path)
+    reader.setAutoTransform(True)
+    size = reader.size()
+    if max_w > 0 and max_h > 0 and size.isValid() and (size.width() > max_w or size.height() > max_h):
+        scaled = size.scaled(max_w, max_h, Qt.AspectRatioMode.KeepAspectRatio)
+        reader.setScaledSize(QSize(max(1, scaled.width()), max(1, scaled.height())))
+    img = reader.read()
+    if img.isNull():
+        return None, reader.errorString() or "알 수 없는 오류"
+    return img, ""
+
+
+def pil_read_image(file_path: str, max_w: int = 0, max_h: int = 0):
+    """PIL 로 그림 읽기 (Qt 가 못 읽을 때 대신). 실패하면 (None, 이유)"""
+    try:
+        with Image.open(file_path) as im:
+            if max_w > 0 and max_h > 0:
+                try:
+                    im.draft("RGB", (max_w, max_h))
+                except Exception:
+                    pass
+            has_alpha = im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
+            im = im.convert("RGBA" if has_alpha else "RGB")
+            if max_w > 0 and max_h > 0:
+                im.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+            data = im.tobytes()
+            fmt = QImage.Format.Format_RGBA8888 if has_alpha else QImage.Format.Format_RGB888
+            bpl = im.width * (4 if has_alpha else 3)
+            return QImage(data, im.width, im.height, bpl, fmt).copy(), ""
+    except Exception as e:
+        return None, f"{e.__class__.__name__}: {e}"
+
+
+def read_image(file_path: str, max_w: int = 0, max_h: int = 0, label: str = "그림"):
+    """Qt → 안 되면 PIL. 둘 다 안 되면 실행 기록에 이유를 남기고 None"""
+    if not file_path or not os.path.exists(file_path):
+        return None
+    img, qt_err = qt_read_image(file_path, max_w, max_h)
+    if img is not None:
+        return img
+    img, pil_err = pil_read_image(file_path, max_w, max_h)
+    if img is not None:
+        print(f"[{label}] Qt 로 못 읽어 PIL 로 읽음: {file_path} (Qt: {qt_err})")
+        return img
+    print(f"[{label}] 읽기 실패: {file_path} ({_file_info(file_path)}) - Qt: {qt_err} / PIL: {pil_err}")
+    return None
+
+
+_DISPLAY_CACHE = OrderedDict()      # (경로, 파일 구별 값, 최대 크기) → QPixmap  (송출 창·미리보기가 같은 그림을 두 번 읽지 않게)
+
+
+def load_display_pixmap(file_path: str, max_w: int = 3840, max_h: int = 2160):
+    """송출·미리보기용 그림. 화면보다 큰 그림은 줄여서 읽는다 (빠르고 메모리를 덜 쓴다).
+    읽을 수 없으면 None (까만 화면 대신 부르는 쪽에서 지금 화면을 그대로 둔다)."""
+    if not file_path or not os.path.exists(file_path):
+        return None
+    try:
+        key = (os.path.abspath(file_path), _file_signature(file_path), max_w, max_h)
+    except OSError:
+        return None
+    pm = _DISPLAY_CACHE.get(key)
+    if pm is not None:
+        _DISPLAY_CACHE.move_to_end(key)
+        return pm
+    img = read_image(file_path, max_w, max_h, label="송출 그림")
+    if img is None:
+        return None
+    pm = QPixmap.fromImage(img)
+    if pm.isNull():
+        print(f"[송출 그림] 화면용 그림으로 바꾸지 못함: {file_path} ({img.width()}x{img.height()})")
+        return None
+    _DISPLAY_CACHE[key] = pm
+    while len(_DISPLAY_CACHE) > 6:
+        _DISPLAY_CACHE.popitem(last=False)
+    return pm
+
+
+def runtime_info() -> str:
+    """실행 환경 (실행 기록 첫 줄에 남겨 문제를 찾을 때 쓴다)"""
+    try:
+        import PySide6
+        import PIL
+        from PySide6.QtCore import qVersion
+        fmts = {bytes(f).decode() for f in QImageReader.supportedImageFormats()}
+        return (f"PySide6 {PySide6.__version__} / Qt {qVersion()} / Pillow {PIL.__version__} / "
+                f"Qt 그림 형식 jpg={'jpg' in fmts} png={'png' in fmts} webp={'webp' in fmts}")
+    except Exception as e:
+        return f"실행 환경 확인 실패: {e}"
+
+
 def generate_image_thumb(file_path: str, width=96, height=72) -> str:
     out = _get_cache_path(file_path, width, height)
     if os.path.exists(out):
         return out
+    started = time.perf_counter()
     try:
         with Image.open(file_path) as img:
             # JPEG는 축소 배율을 미리 알려 주면 훨씬 빨리 읽힌다
@@ -61,10 +173,25 @@ def generate_image_thumb(file_path: str, width=96, height=72) -> str:
             canvas = Image.new("RGB", (width, height), (30, 30, 30))
             canvas.paste(img, ((width - tw) // 2, (height - th) // 2))
             canvas.save(out, "PNG")
+        took = time.perf_counter() - started
+        if took > 3:
+            print(f"[썸네일] {took:.1f}초 걸림: {file_path}")
         return out
     except Exception as e:
-        print(f"Error making image thumb for {file_path}: {e}")
-        return ""
+        pil_err = f"{e.__class__.__name__}: {e}"
+    # PIL 이 못 읽으면 Qt 로 한 번 더
+    img, qt_err = qt_read_image(file_path, width, height)
+    if img is not None:
+        canvas = QImage(width, height, QImage.Format.Format_RGB32)
+        canvas.fill(QColor(30, 30, 30))
+        p = QPainter(canvas)
+        p.drawImage((width - img.width()) // 2, (height - img.height()) // 2, img)
+        p.end()
+        if canvas.save(out, "PNG"):
+            print(f"[썸네일] PIL 로 못 읽어 Qt 로 만듦: {file_path} (PIL: {pil_err})")
+            return out
+    print(f"[썸네일] 만들기 실패: {file_path} ({_file_info(file_path)}) - PIL: {pil_err} / Qt: {qt_err}")
+    return ""
 
 
 def generate_video_thumb(file_path: str, width=96, height=72, badge=True) -> str:
@@ -114,18 +241,32 @@ def get_thumbnail(file_path: str, width=96, height=72, badge=True) -> str:
 
 def image_is_readable(file_path: str) -> bool:
     """그림을 실제로 읽을 수 있는지 (저장·동기화 중이라 아직 비어 있거나 잠긴 파일을 거른다).
-    작게 줄여 읽으므로(JPEG 는 1/8 로 풀기) 큰 사진도 빠르다."""
+    작게 줄여 읽으므로 큰 사진도 빠르다. Qt 가 못 읽어도 PIL 로 읽히면 읽을 수 있는 것으로 본다."""
     try:
-        from PySide6.QtGui import QImageReader
-        from PySide6.QtCore import QSize
-        reader = QImageReader(file_path)
-        size = reader.size()
-        if not size.isValid() or size.width() <= 0:
-            return False
-        reader.setScaledSize(QSize(max(1, size.width() // 8), max(1, size.height() // 8)))
-        return not reader.read().isNull()
+        return read_image(file_path, 400, 400, label="읽기 확인") is not None
     except Exception:
         return False
+
+
+def forget_thumbnails(paths, sizes):
+    """이 파일들의 썸네일·송출 그림 저장분을 지운다 (다시 만들게)"""
+    removed = 0
+    for p in paths:
+        for (w, h) in sizes:
+            for variant in ("", "_plain"):
+                try:
+                    out = _get_cache_path(p, w, h, variant)
+                except OSError:
+                    continue
+                if os.path.exists(out):
+                    try:
+                        os.remove(out)
+                        removed += 1
+                    except OSError:
+                        pass
+    for key in [k for k in _DISPLAY_CACHE if k[0] in {os.path.abspath(p) for p in paths}]:
+        _DISPLAY_CACHE.pop(key, None)
+    return removed
 
 
 def is_video_file(path) -> bool:
@@ -187,6 +328,10 @@ class ThumbnailTask(QRunnable):
     def run(self):
         try:
             thumb = get_thumbnail(self.file_path, self.width, self.height, badge=self.badge)
+        except Exception as e:
+            print(f"[썸네일] 예상하지 못한 오류: {self.file_path} - {e.__class__.__name__}: {e}")
+            thumb = ""
+        try:
             self.signals.finished.emit(self.file_path, thumb)
         except (RuntimeError, AttributeError):
             pass

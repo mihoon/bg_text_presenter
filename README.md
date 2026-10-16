@@ -146,6 +146,10 @@ pip install pywin32 pypdfium2
 송출 중이던 사진 자리도 새 그림으로 바뀝니다. 아직 다 써지지 않아 읽을 수 없는 사진을 누르면 까만 화면을 내보내지
 않고 지금 화면을 그대로 둔 채 안내만 합니다.
 
+썸네일이나 송출 그림이 그래도 이상하면 가운데 사진 목록에서 **우클릭 → `🔄 사진 다시 읽기`** 또는 **F5** 를 누르세요.
+그 폴더의 썸네일 저장분을 지우고 처음부터 다시 만듭니다. 그림을 읽지 못하면 그 이유(파일 크기, 오류)가
+`%LOCALAPPDATA%\BgTextPresenter\logs\app.log` 에 남습니다. 큰 사진은 송출 화면 크기로 줄여서 읽으므로 넘기기가 빨라집니다.
+
 ## ESC 키 (한 단계씩 내리기)
 
 `ESC`는 위에 얹힌 것부터 한 단계씩 내립니다.
@@ -201,7 +205,7 @@ python test_notes_popup.py      :: 노트 따로 보기 창 (본 창 앞에 유�
 python test_mix_bundle.py       :: 묶음 파일·카드 순서 (섞기, 원본이 바뀐 경우, PPT 준비 중 순서 보존)
 python test_mix_mode.py         :: 묶음 화면 (겹쳐서 묶기, 종류별 송출, 끌어서 섞기, Ctrl/Shift 여러 장 옮기기, 키 넘기기, 묶음 풀기)
 python test_updater.py         :: 새 버전 확인·내려받기·바꿔 끼우기·업데이트 창 (가짜 GitHub 서버)
-python test_folder_watch.py     :: 이미지 폴더를 지웠다 다시 만들기·동기화 중인 사진 (목록·썸네일·송출 화면 저절로 새로 고침)
+python test_folder_watch.py     :: 이미지 폴더를 지웠다 다시 만들기·동기화 중인 사진·Qt/PIL 대신 읽기·썸네일 일꾼 막힘·F5 다시 읽기
 python test_text_align.py       :: 글자 세로 위치(위/가운데/아래)·위아래 여백 테스트
 ```
 

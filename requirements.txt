@@ -1,4 +1,6 @@
-PySide6
+# PySide6 는 잘 돌아가는 것으로 확인된 판으로 고정한다
+# (새 판이 나오면 exe 를 만드는 GitHub 에서 저절로 바뀌어 예상하지 못한 문제가 생길 수 있다)
+PySide6==6.11.2
 Pillow
 opencv-python
 numpy
