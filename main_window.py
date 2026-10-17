@@ -41,6 +41,7 @@ from text_engine import load_text_file, join_paragraphs, split_paragraphs
 from music_player import MusicController, MUSIC_EXTS
 import image_notes
 import mix_bundle
+from library_model import Library, LOOSE
 import subtitles
 import ppt_engine
 from version import APP_VERSION
@@ -174,7 +175,7 @@ TRANSLATIONS = {
             "• 자세한 진단: 프로젝트 폴더에서  python test_ppt_diag.py \"파일경로\""
         ),
         "add_txt_file": "📂 파일 추가…",
-        "txt_lib_hint": "💡 텍스트·PPT·동영상 파일이나 폴더를 끌어다 놓거나(드래그&드롭) 클릭하여 불러옵니다. 목록의 한 항목을 다른 항목 위에 끌어다 겹치면 🔗 묶음이 됩니다.",
+        "txt_lib_hint": "💡 파일·폴더를 끌어다 놓거나 클릭해 불러옵니다. 📂 새 폴더(교사 예배·어른 예배 등)에 끌어다 넣으면 옮겨지고, Ctrl 을 누른 채 놓으면 그대로 두고 함께 넣습니다(여러 폴더에 중복 가능). 항목을 다른 항목 위에 겹치면 🔗 묶음이 됩니다.",
         "mix_files_suffix": "개 파일",
         "status_mix_presenting": "| 🔗 묶음 {0}/{1} 송출 중",
         "mix_ppt_preparing": "⏳ PPT 슬라이드를 준비하는 중…",
@@ -193,7 +194,28 @@ TRANSLATIONS = {
         "btn_add_image_folder_tip": "폴더 내의 이미지를 모아 슬라이드로 등록",
         "btn_remove_text_file": "🗑 선택 삭제",
         "btn_remove_text_file_tip": "선택한 항목들을 라이브러리에서 제거 (Ctrl/Shift 다중 선택 가능)",
-        "btn_clear_text_files": "🧹 전체 비우기",
+        "btn_clear_text_files": "🧹 비우기",
+        "btn_new_lib_folder": "📂 새 폴더",
+        "btn_new_lib_folder_tip": "목록 폴더를 만듭니다 (예: 교사 예배, 어른 예배).\n파일을 폴더 위로 끌어다 놓으면 옮겨지고, Ctrl 을 누른 채 놓으면 그대로 두고 함께 넣습니다.\n같은 파일을 여러 폴더에 넣을 수 있습니다.",
+        "lib_folder_name_title": "목록 폴더",
+        "lib_folder_name_prompt": "폴더 이름 (예: 교사 예배, 어른 예배):",
+        "lib_folder_default": "새 폴더",
+        "lib_folder_empty": "(비어 있음 - 파일을 이 폴더 위로 끌어다 놓으세요)",
+        "lib_menu_move_to": "📂 폴더로 옮기기",
+        "lib_menu_copy_to": "📋 다른 폴더에도 넣기 (그대로 두고)",
+        "lib_menu_new_folder_item": "➕ 새 폴더…",
+        "lib_menu_take_out": "⬆ 폴더에서 꺼내기",
+        "lib_menu_remove_here": "✖ 이 폴더에서 빼기",
+        "lib_menu_rename": "✏️ 이름 바꾸기",
+        "lib_menu_delete_folder": "🗑 폴더 지우기 (안의 파일은 그대로)",
+        "lib_menu_fold": "▶ 접기",
+        "lib_menu_unfold": "▼ 펼치기",
+        "lib_menu_new_folder": "📂 새 폴더 만들기",
+        "lib_delete_folder_title": "폴더 지우기",
+        "lib_delete_folder_msg": "'{0}' 폴더를 지울까요?\n\n폴더 안의 목록만 지워지고, 실제 파일은 지워지지 않습니다.",
+        "lib_clear_all_msg": "목록 폴더를 포함해 왼쪽 목록을 모두 비울까요?\n\n실제 파일은 지워지지 않습니다.",
+        "msg_lib_moved": "📂 '{0}' 폴더로 옮겼습니다",
+        "msg_lib_copied": "📋 '{0}' 폴더에도 넣었습니다",
         "btn_clear_text_files_tip": "등록된 모든 텍스트 파일 및 폴더를 목록에서 비웁니다.",
         "btn_add_item": "➕ 추가",
         "btn_add_item_tip": "텍스트·PPT·동영상 파일 또는 이미지 폴더를 라이브러리에 추가",
@@ -497,7 +519,7 @@ TRANSLATIONS = {
             "• For details, run:  python test_ppt_diag.py \"path\\to\\file.pptx\""
         ),
         "add_txt_file": "📂 Add Files…",
-        "txt_lib_hint": "💡 Drag and drop text, PPT or video files or folders here, or click to load. Drop one item onto another to make a 🔗 bundle.",
+        "txt_lib_hint": "💡 Drop files or folders here, or click to load. Drag items onto a 📂 list folder to move them; hold Ctrl while dropping to keep them here as well (one file can be in several folders). Drop an item onto another to make a 🔗 bundle.",
         "mix_files_suffix": " files",
         "status_mix_presenting": "| 🔗 Bundle {0}/{1} presenting",
         "mix_ppt_preparing": "⏳ Preparing PPT slides…",
@@ -516,7 +538,28 @@ TRANSLATIONS = {
         "btn_add_image_folder_tip": "Register folder of images as slides",
         "btn_remove_text_file": "🗑 Delete",
         "btn_remove_text_file_tip": "Remove selected items from library (Ctrl/Shift multi-select)",
-        "btn_clear_text_files": "🧹 Clear All",
+        "btn_clear_text_files": "🧹 Clear",
+        "btn_new_lib_folder": "📂 New Folder",
+        "btn_new_lib_folder_tip": "Make a list folder (e.g. Teachers' Service, Adult Service).\nDrop a file onto a folder to move it there; hold Ctrl while dropping to keep it and add a copy.\nThe same file can be in several folders.",
+        "lib_folder_name_title": "List folder",
+        "lib_folder_name_prompt": "Folder name (e.g. Teachers' Service, Adult Service):",
+        "lib_folder_default": "New Folder",
+        "lib_folder_empty": "(empty - drag files onto this folder)",
+        "lib_menu_move_to": "📂 Move to folder",
+        "lib_menu_copy_to": "📋 Also add to folder (keep here)",
+        "lib_menu_new_folder_item": "➕ New folder…",
+        "lib_menu_take_out": "⬆ Take out of folder",
+        "lib_menu_remove_here": "✖ Remove from this folder",
+        "lib_menu_rename": "✏️ Rename",
+        "lib_menu_delete_folder": "🗑 Delete folder (files are kept)",
+        "lib_menu_fold": "▶ Collapse",
+        "lib_menu_unfold": "▼ Expand",
+        "lib_menu_new_folder": "📂 New folder",
+        "lib_delete_folder_title": "Delete folder",
+        "lib_delete_folder_msg": "Delete the folder '{0}'?\n\nOnly the list inside is removed - the actual files are not deleted.",
+        "lib_clear_all_msg": "Clear the whole list on the left, including list folders?\n\nThe actual files are not deleted.",
+        "msg_lib_moved": "📂 Moved to '{0}'",
+        "msg_lib_copied": "📋 Also added to '{0}'",
         "btn_clear_text_files_tip": "Clear all registered text files and folders from list.",
         "btn_add_item": "➕ Add",
         "btn_add_item_tip": "Add a text, PPT or video file, or an image folder to the library",
@@ -732,6 +775,7 @@ USER_ROLE_INDEX = Qt.ItemDataRole.UserRole + 2
 USER_ROLE_THUMB = Qt.ItemDataRole.UserRole + 3
 USER_ROLE_CAPTION = Qt.ItemDataRole.UserRole + 10   # 묶음 카드 아래 이름 줄
 USER_ROLE_PICKED = Qt.ItemDataRole.UserRole + 11    # 묶음 카드: Ctrl/Shift 로 함께 고른 카드
+USER_ROLE_GROUP = Qt.ItemDataRole.UserRole + 12     # 왼쪽 목록: 들어 있는 목록 폴더 번호 (-1 = 폴더 밖)
 
 # 가운데 썸네일 그리드(이미지 폴더/PPT 슬라이드)의 원본 캐시 해상도.
 # Ctrl+휠로 카드를 키워도 확대된 썸네일이 흐려지지 않도록 실제 표시 크기보다
@@ -771,10 +815,14 @@ class LibraryRowWidget(QWidget):
         self.btn_delete.clicked.connect(lambda checked=False: self.deleteClicked.emit())
         layout.addWidget(self.btn_delete, 0)
 
-    def set_content(self, number: int, text: str, color: str, tooltip: str = ""):
-        self.label.setText(f"{number}. {text}")
-        self.label.setStyleSheet(f"background: transparent; color: {color};")
+    def set_content(self, number, text: str, color: str, tooltip: str = "", indent: int = 0, bold: bool = False):
+        self.label.setText(f"{number}. {text}" if number is not None else text)
+        weight = "font-weight: bold;" if bold else ""
+        self.label.setStyleSheet(f"background: transparent; color: {color}; {weight}")
         self.setToolTip(tooltip)
+        if indent:
+            m = self.layout().contentsMargins()
+            self.layout().setContentsMargins(6 + indent, m.top(), m.right(), m.bottom())
 
     def set_font_size(self, size: int):
         f = self.label.font()
@@ -796,6 +844,9 @@ class DropListWidget(QListWidget):
     filesDropped = Signal(list)
     itemsReordered = Signal()   # 드래그로 내부 순서가 바뀐 뒤 발생
     itemsMerged = Signal(list, str)   # (끌어 온 항목 경로들, 겹친 대상 경로) - 묶음 만들기
+    # 목록 폴더가 있는 목록: (끌어 온 줄들, 놓은 줄(-1 = 빈 곳), 방식, Ctrl 복사) - 방식은
+    # before / after (그 줄 앞·뒤), into (폴더 안으로), merge (겹쳐서 묶음), end (맨 끝)
+    libraryDropped = Signal(list, int, str, bool)
 
     def __init__(self, parent=None, reorderable=False):
         super().__init__(parent)
@@ -803,17 +854,43 @@ class DropListWidget(QListWidget):
         self._reorderable = reorderable
         self._merge_row = -1        # 끌어 겹치려는 대상 줄 (테두리로 표시)
         self.merge_enabled = False
+        self.folder_mode = False    # 목록 폴더를 쓰는 왼쪽 목록 (놓는 자리를 직접 판단한다)
+        self._hint = None           # (줄, 방식) - 놓을 자리 표시
+        self.last_drop_row = -1     # 바깥 파일을 놓은 줄 (그 폴더에 넣기 위해)
         if reorderable:
             self.setDragEnabled(True)
             self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
             self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    def drop_hint(self, pos):
+        """목록 폴더 모드에서 놓을 자리: (줄, 방식)"""
+        item = self.itemAt(pos)
+        if item is None:
+            return (-1, "end")
+        row = self.row(item)
+        rect = self.visualItemRect(item)
+        upper = pos.y() < rect.center().y()
+        dragging_folders = any(it.data(USER_ROLE_KIND) == "group" for it in self.selectedItems())
+        if dragging_folders:
+            return (row, "before" if upper else "after")
+        if item.data(USER_ROLE_KIND) == "group":
+            return (row, "into")
+        if item.data(USER_ROLE_KIND) == "empty":
+            return (row, "into")
+        if self.merge_target_row(pos) == row:
+            return (row, "merge")
+        if item.isSelected():
+            return (row, "none")
+        return (row, "before" if upper else "after")
 
     def merge_target_row(self, pos) -> int:
         """줄 가운데 부분에 놓으면 '겹치기'(묶음), 위·아래 가장자리에 놓으면 순서 바꾸기"""
         if not self.merge_enabled:
             return -1
         item = self.itemAt(pos)
-        if item is None or item.isSelected():
+        if item is None or item.isSelected() or item.data(USER_ROLE_KIND) in ("group", "empty"):
+            return -1
+        if any(it.data(USER_ROLE_KIND) == "group" for it in self.selectedItems()):
             return -1
         rect = self.visualItemRect(item)
         edge = max(4, rect.height() // 4)
@@ -826,8 +903,37 @@ class DropListWidget(QListWidget):
             self._merge_row = row
             self.viewport().update()
 
+    def _set_hint(self, hint):
+        if hint != self._hint:
+            self._hint = hint
+            self.viewport().update()
+
     def paintEvent(self, event):
         super().paintEvent(event)
+        if self._hint is not None and self.folder_mode:
+            row, mode = self._hint
+            painter = QPainter(self.viewport())
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            if mode == "end":
+                last = self.item(self.count() - 1) if self.count() else None
+                y = self.visualItemRect(last).bottom() + 1 if last is not None else 2
+                painter.setPen(QPen(QColor("#4fc3f7"), 3))
+                painter.drawLine(4, y, self.viewport().width() - 4, y)
+            elif row >= 0 and self.item(row) is not None:
+                rect = QRectF(self.visualItemRect(self.item(row))).adjusted(1, 1, -1, -1)
+                if mode in ("merge", "into"):
+                    color = QColor("#ffd866") if mode == "merge" else QColor("#c9a7ff")
+                    painter.setPen(QPen(color, 2))
+                    fill = QColor(color)
+                    fill.setAlpha(45)
+                    painter.setBrush(fill)
+                    painter.drawRoundedRect(rect, 4, 4)
+                elif mode in ("before", "after"):
+                    y = rect.top() if mode == "before" else rect.bottom()
+                    painter.setPen(QPen(QColor("#4fc3f7"), 3))
+                    painter.drawLine(int(rect.left()) + 4, int(y), int(rect.right()) - 4, int(y))
+            painter.end()
+            return
         if self._merge_row >= 0 and self.item(self._merge_row) is not None:
             painter = QPainter(self.viewport())
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -844,7 +950,18 @@ class DropListWidget(QListWidget):
 
     def dragMoveEvent(self, event):
         if event.mimeData().hasUrls():
+            if self.folder_mode:
+                self._set_hint(self.drop_hint(event.position().toPoint()))
             event.acceptProposedAction()
+            return
+        if self.folder_mode and event.source() is self:
+            hint = self.drop_hint(event.position().toPoint())
+            self._set_hint(hint)
+            if hint[1] == "none":
+                event.ignore()
+                return
+            event.setDropAction(Qt.DropAction.MoveAction)
+            event.accept()
             return
         row = self.merge_target_row(event.position().toPoint()) if event.source() is self else -1
         self._set_merge_row(row)
@@ -856,11 +973,26 @@ class DropListWidget(QListWidget):
 
     def dragLeaveEvent(self, event):
         self._set_merge_row(-1)
+        self._set_hint(None)
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
         self._set_merge_row(-1)
+        hint = self.drop_hint(event.position().toPoint()) if self.folder_mode else None
+        self._set_hint(None)
+        if self.folder_mode and event.source() is self and not event.mimeData().hasUrls():
+            rows = sorted(self.row(it) for it in self.selectedItems())
+            copy = bool((event.modifiers() | QGuiApplication.keyboardModifiers())
+                        & Qt.KeyboardModifier.ControlModifier)
+            # 항목을 직접 옮기지 않는다 (IgnoreAction 이면 원래 자리의 줄도 지워지지 않는다) - 목록을 새로 그린다
+            event.setDropAction(Qt.DropAction.IgnoreAction)
+            event.accept()
+            if rows and hint and hint[1] != "none":
+                # 끌기가 완전히 끝난 뒤에 목록을 새로 그린다 (끌기 도중에 줄을 지우면 위험하다)
+                QTimer.singleShot(0, lambda r=rows, h=hint, c=copy: self.libraryDropped.emit(r, h[0], h[1], c))
+            return
         if event.mimeData().hasUrls():
+            self.last_drop_row = hint[0] if hint else -1
             paths = []
             for url in event.mimeData().urls():
                 p = url.toLocalFile()
@@ -2034,6 +2166,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "btn_clear_text_files"):
             self.btn_clear_text_files.setText(self.t("btn_clear_text_files"))
             self.btn_clear_text_files.setToolTip(self.t("btn_clear_text_files_tip"))
+        if hasattr(self, "btn_new_lib_folder"):
+            self.btn_new_lib_folder.setText(self.t("btn_new_lib_folder"))
+            self.btn_new_lib_folder.setToolTip(self.t("btn_new_lib_folder_tip"))
         if hasattr(self, "lbl_text_files_hint"):
             self.lbl_text_files_hint.setText(self.t("txt_lib_hint"))
         self._refresh_text_files_list(select_path=self.text_file_path)
@@ -3022,7 +3157,12 @@ class MainWindow(QMainWindow):
         self.btn_clear_text_files.setToolTip(self.t("btn_clear_text_files_tip"))
         self.btn_clear_text_files.clicked.connect(self._clear_all_text_files)
 
+        self.btn_new_lib_folder = QPushButton(self.t("btn_new_lib_folder"))
+        self.btn_new_lib_folder.setToolTip(self.t("btn_new_lib_folder_tip"))
+        self.btn_new_lib_folder.clicked.connect(lambda: self._new_library_folder())
+
         btn_row.addWidget(self.btn_add_item)
+        btn_row.addWidget(self.btn_new_lib_folder)
         btn_row.addWidget(self.btn_clear_text_files)
         group_layout.addLayout(btn_row)
 
@@ -3056,6 +3196,9 @@ class MainWindow(QMainWindow):
         # 한 항목을 다른 항목 위에 끌어다 겹치면 묶음이 된다
         self.list_text_files.merge_enabled = True
         self.list_text_files.itemsMerged.connect(self._on_library_items_merged)
+        # 목록 폴더 (교사 예배 / 어른 예배 …): 놓는 자리에 따라 폴더 안으로·순서 바꾸기·묶기
+        self.list_text_files.folder_mode = True
+        self.list_text_files.libraryDropped.connect(self._on_library_drop)
         self.list_text_files.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_text_files.customContextMenuRequested.connect(self._on_library_context_menu)
         group_layout.addWidget(self.list_text_files, 1)
@@ -4531,15 +4674,9 @@ class MainWindow(QMainWindow):
         if not file_paths:
             return
         self.settings.setValue("last_dir", os.path.dirname(file_paths[0]))
-        existing = self._get_registered_text_files()
-        added = False
-        for p in file_paths:
-            if p and p not in existing:
-                existing.append(p)
-                added = True
-        if added:
-            self._save_registered_text_files(existing)
-        self._refresh_text_files_list(select_path=file_paths[0])
+        group = self._library_add_target()
+        self._library_add_paths(file_paths, group)
+        self._refresh_text_files_list(select_path=file_paths[0], select_group=group)
         first = file_paths[0]
         if ppt_engine.is_ppt_file(first):
             self._load_pptx(first)
@@ -4741,11 +4878,9 @@ class MainWindow(QMainWindow):
         if not folder:
             return
         self.settings.setValue("last_dir", folder)
-        existing = self._get_registered_text_files()
-        if folder not in existing:
-            existing.append(folder)
-            self._save_registered_text_files(existing)
-        self._refresh_text_files_list(select_path=folder)
+        group = self._library_add_target()
+        self._library_add_paths([folder], group)
+        self._refresh_text_files_list(select_path=folder, select_group=group)
         self._load_image_folder(folder)
 
     def _remove_text_file_from_library(self):
@@ -4757,18 +4892,29 @@ class MainWindow(QMainWindow):
                 items = [self.list_text_files.item(row)]
         if not items:
             return
-        target_paths = {item.data(USER_ROLE_PATH) for item in items if item.data(USER_ROLE_PATH)}
-        current = self._get_registered_text_files()
-        new_list = [p for p in current if p not in target_paths]
-        if len(new_list) != len(current):
-            self._save_registered_text_files(new_list)
-            self._refresh_text_files_list()
+        lib = self._library()
+        refs = [r for r in (self._row_ref(it) for it in items) if r is not None]
+        groups = sorted({it.data(USER_ROLE_GROUP) for it in items if it.data(USER_ROLE_KIND) == "group"})
+        if groups:
+            names = ", ".join(lib.folders[g]["name"] for g in groups if 0 <= g < len(lib.folders))
+            if QMessageBox.question(self, self.t("lib_delete_folder_title"),
+                                    self.t("lib_delete_folder_msg", names)) != QMessageBox.StandardButton.Yes:
+                return
+        refs = [r for r in refs if r[0] not in groups]
+        lib.remove(refs)
+        for g in reversed(groups):
+            lib.delete_folder(g)
+        self._save_library(lib)
+        self._refresh_text_files_list()
 
     def _clear_all_text_files(self):
         """텍스트 파일/폴더 라이브러리 목록을 전체 비움"""
         if self.list_text_files.count() == 0:
             return
-        self._save_registered_text_files([])
+        if self._library().folders and QMessageBox.question(
+                self, self.t("notice"), self.t("lib_clear_all_msg")) != QMessageBox.StandardButton.Yes:
+            return
+        self._save_library(Library([], []))
         self._refresh_text_files_list()
 
     def _handle_text_files_dropped(self, paths: list):
@@ -4790,17 +4936,13 @@ class MainWindow(QMainWindow):
         if not valid_items:
             return
 
-        existing = self._get_registered_text_files()
-        added = False
+        group = self._library_drop_group(getattr(self.list_text_files, "last_drop_row", -1))
+        self.list_text_files.last_drop_row = -1
         first_added = valid_items[0]
-        for p in valid_items:
-            if p not in existing:
-                existing.append(p)
-                added = True
+        added = self._library_add_paths(valid_items, group, only_new=False)
 
         if added:
-            self._save_registered_text_files(existing)
-            self._refresh_text_files_list(select_path=first_added)
+            self._refresh_text_files_list(select_path=first_added, select_group=group)
             if os.path.isdir(first_added):
                 self._load_image_folder(first_added)
             elif ppt_engine.is_ppt_file(first_added):
@@ -4817,6 +4959,20 @@ class MainWindow(QMainWindow):
             return
         path = item.data(USER_ROLE_PATH)
         kind = item.data(USER_ROLE_KIND)
+        if kind == "group":
+            # 줄 위젯과 목록이 같은 누름을 두 번 알려 오므로 잠깐 사이의 두 번째는 무시한다
+            now = time.monotonic()
+            g = item.data(USER_ROLE_GROUP)
+            if getattr(self, "_last_folder_toggle", (None, 0))[0] == g and now - self._last_folder_toggle[1] < 0.4:
+                return
+            self._last_folder_toggle = (g, now)
+            lib = self._library()
+            lib.toggle_folder(g)
+            self._save_library(lib)
+            self._refresh_text_files_list(select_group=g, select_header=True)
+            return
+        if kind == "empty":
+            return
         if not path or not os.path.exists(path):
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(
@@ -4871,11 +5027,17 @@ class MainWindow(QMainWindow):
         """텍스트 파일 하나를 좌측 라이브러리에 등록(중복 제외)하고 목록에서 선택한다."""
         if not file_path:
             return
-        existing = self._get_registered_text_files()
-        if file_path not in existing:
-            existing.append(file_path)
-            self._save_registered_text_files(existing)
-        self._refresh_text_files_list(select_path=file_path)
+        lib = self._library()
+        refs = lib.locate(file_path)
+        if refs:
+            # 이미 목록(폴더 안 포함)에 있으면 더하지 않고 그 줄을 고른다 (지금 고른 폴더 쪽을 먼저)
+            group = self._library_add_target()
+            groups = [g for g, _ in refs]
+            self._refresh_text_files_list(select_path=file_path, select_group=group if group in groups else groups[0])
+            return
+        group = self._library_add_target()
+        self._library_add_paths([file_path], group)
+        self._refresh_text_files_list(select_path=file_path, select_group=group)
 
     # 종류별 이름 색 (어두운 배경에서도 잘 읽히도록)
     _LIBRARY_ITEM_COLORS = {
@@ -4884,71 +5046,285 @@ class MainWindow(QMainWindow):
         "folder": "#8ce99a",   # 이미지 폴더 - 연두
         "video": "#ff9ecf",    # 동영상 - 분홍
         "mix": "#ffd866",      # 묶음 - 노랑
+        "group": "#c9a7ff",    # 목록 폴더 - 보라
     }
 
-    def _remove_one_text_file(self, path: str):
-        """라이브러리 한 줄의 휴지통 버튼 - 그 항목 하나만 제거"""
+    def _remove_one_text_file(self, path: str, group: int = LOOSE):
+        """라이브러리 한 줄의 휴지통 버튼 - 그 자리(폴더 밖 또는 그 폴더)에서만 뺀다"""
         if not path:
             return
-        current = self._get_registered_text_files()
-        new_list = [p for p in current if p != path]
-        if len(new_list) != len(current):
-            self._save_registered_text_files(new_list)
+        lib = self._library()
+        items = lib.container(group) if group == LOOSE or 0 <= group < len(lib.folders) else []
+        if path in items:
+            lib.remove([(group, items.index(path))])
+            self._save_library(lib)
             self._refresh_text_files_list()
 
-    def _refresh_text_files_list(self, select_path: str = ""):
-        """QSettings에서 등록 항목을 읽어 list_text_files를 다시 그림 (번호/종류별 색/삭제 버튼 포함)"""
-        if not hasattr(self, "list_text_files"):
+    # ------------------------------------------------------------------
+    # 목록 폴더 (교사 예배 / 어른 예배 …)
+    # ------------------------------------------------------------------
+    def _library(self) -> Library:
+        return Library(self._get_registered_text_files(),
+                       Library.folders_from_json(self.settings.value("text_files/folders", "")))
+
+    def _save_library(self, lib: Library):
+        self._save_registered_text_files(lib.loose)
+        self.settings.setValue("text_files/folders", lib.folders_to_json())
+
+    def _row_ref(self, item):
+        """목록 한 줄 → (폴더 번호, 그 안의 자리). 폴더 머리·빈 폴더 줄이면 None"""
+        if item is None or item.data(USER_ROLE_KIND) in ("group", "empty"):
+            return None
+        g = item.data(USER_ROLE_GROUP)
+        i = item.data(USER_ROLE_INDEX)
+        if g is None or i is None:
+            return None
+        return (int(g), int(i))
+
+    def _library_add_target(self) -> int:
+        """새로 더하는 파일이 들어갈 곳: 지금 고른 줄이 폴더(또는 그 안)면 그 폴더, 아니면 폴더 밖"""
+        lst = getattr(self, "list_text_files", None)
+        item = lst.currentItem() if lst is not None else None
+        if item is None or not item.isSelected():
+            return LOOSE
+        g = item.data(USER_ROLE_GROUP)
+        return int(g) if g is not None else LOOSE
+
+    def _library_drop_group(self, row: int) -> int:
+        lst = self.list_text_files
+        item = lst.item(row) if row is not None and row >= 0 else None
+        if item is None:
+            return LOOSE
+        g = item.data(USER_ROLE_GROUP)
+        return int(g) if g is not None else LOOSE
+
+    def _library_add_paths(self, paths, group: int = LOOSE, only_new: bool = True) -> list:
+        """파일들을 목록에 더한다. 폴더 밖에 더할 때 이미 어딘가(폴더 안 포함)에 있으면 다시 넣지 않는다"""
+        lib = self._library()
+        if group != LOOSE and not (0 <= group < len(lib.folders)):
+            group = LOOSE
+        if group == LOOSE:
+            todo = [p for p in paths if p and not lib.contains(p)]
+        else:
+            todo = [p for p in paths if p]
+        added = lib.add(todo, group)
+        if added:
+            self._save_library(lib)
+        return added if only_new else (added or [p for p in paths if p])
+
+    def _new_library_folder(self, name: str = None, refs=None, copy: bool = False) -> int:
+        """목록 폴더 만들기 (refs 를 주면 그 파일들을 새 폴더에 넣는다)"""
+        if name is None:
+            from PySide6.QtWidgets import QInputDialog
+            name, ok = QInputDialog.getText(self, self.t("lib_folder_name_title"),
+                                            self.t("lib_folder_name_prompt"),
+                                            text=self.t("lib_folder_default"))
+            if not ok or not name.strip():
+                return -1
+        lib = self._library()
+        g = lib.new_folder(name)
+        if refs:
+            lib.place(refs, g, copy=copy)
+        self._save_library(lib)
+        self._refresh_text_files_list(select_group=g, select_header=True)
+        return g
+
+    def _on_library_drop(self, rows: list, target_row: int, mode: str, copy: bool):
+        """왼쪽 목록 안에서 끌어 놓았을 때 - 폴더 안으로 / 순서 바꾸기 / 겹쳐서 묶기"""
+        lst = self.list_text_files
+        lib = self._library()
+        items = [lst.item(r) for r in rows if lst.item(r) is not None]
+        target = lst.item(target_row) if target_row >= 0 else None
+        folder_groups = [int(it.data(USER_ROLE_GROUP)) for it in items if it.data(USER_ROLE_KIND) == "group"]
+        if folder_groups:
+            # 폴더 순서 바꾸기 (폴더 밖 줄 위에 놓으면 맨 끝으로)
+            tg = target.data(USER_ROLE_GROUP) if target is not None else None
+            tg = int(tg) if tg is not None and int(tg) >= 0 else None
+            lib.move_folders(folder_groups, tg, after=(mode == "after"))
+            self._save_library(lib)
+            self._refresh_text_files_list()
             return
-        self.list_text_files.blockSignals(True)
-        self.list_text_files.clear()
+        refs = [r for r in (self._row_ref(it) for it in items) if r is not None]
+        if not refs:
+            return
+        if mode == "merge" and target is not None and self._row_ref(target) is not None:
+            self._library_merge(refs, self._row_ref(target))
+            return
+        if mode == "end" or target is None:
+            tg, pos = LOOSE, None
+        elif mode == "into":
+            tg, pos = int(target.data(USER_ROLE_GROUP)), None
+        else:
+            tref = self._row_ref(target)
+            if tref is None:
+                return
+            tg, pos = tref[0], tref[1] + (1 if mode == "after" else 0)
+        moved_paths = lib.place(refs, tg, pos, copy=copy)
+        self._save_library(lib)
+        self._refresh_text_files_list(select_path=moved_paths[0] if moved_paths else "", select_group=tg)
+        if tg != LOOSE and any(r[0] != tg for r in refs):
+            self.statusBar().showMessage(
+                self.t("msg_lib_copied" if copy else "msg_lib_moved", lib.folders[tg]["name"]), 4000)
+
+    def _library_merge(self, src_refs, target_ref):
+        """겹쳐서 묶기 - 대상 자리에 묶음이 생기고 끌어 온 것들은 원래 자리에서 빠진다"""
+        lib = self._library()
+        target = lib.path_at(target_ref)
+        src_refs = [r for r in src_refs if r != target_ref and lib.path_at(r) not in (None, target)]
+        sources = []
+        for r in src_refs:
+            p = lib.path_at(r)
+            if p not in sources:
+                sources.append(p)
+        if not sources or not target:
+            return
+        order = []
+        for src in [target] + sources:
+            order += [k for k in self._arranged_keys(src) if k not in order]
+        try:
+            if mix_bundle.is_mix_file(target):
+                mix_bundle.add_sources(target, sources)
+                mix_path = target
+                message = "msg_mix_added"
+            else:
+                mix_path = mix_bundle.create_mix(self._settings_dir, [target] + sources)
+                message = "msg_mix_created"
+            data = mix_bundle.load_mix(mix_path)
+            data["order"] = order
+            mix_bundle.save_mix(mix_path, data)
+        except OSError as e:
+            QMessageBox.warning(self, self.t("notice"), str(e))
+            return
+        # 대상 자리를 묶음으로 바꾼 뒤 끌어 온 자리들을 뺀다 (같은 폴더 안 번호가 밀리지 않게 표시로 찾는다)
+        group = target_ref[0]
+        items = lib.container(group)
+        marker = object()
+        items[target_ref[1]] = marker
+        lib.remove([r for r in src_refs])
+        at = next(i for i, x in enumerate(items) if x is marker)
+        if mix_path in items:
+            del items[at]
+        else:
+            items[at] = mix_path
+        self._save_library(lib)
+        self._refresh_text_files_list(select_path=mix_path, select_group=group)
+        self._load_mix(mix_path)
+        self.statusBar().showMessage(self.t(message, self.media_source_name), 6000)
+
+    def _library_row_text(self, path: str):
+        """목록 한 줄의 글과 종류"""
         folder_badge = self.t("item_folder_badge")
         count_suffix = self.t("items_count_suffix")
+        base = os.path.basename(path)
+        if mix_bundle.is_mix_file(path):
+            data = mix_bundle.load_mix(path)
+            return f"🔗 {mix_bundle.display_name(data)} ({len(data['sources'])}{self.t('mix_files_suffix')})", "mix"
+        if os.path.isdir(path):
+            imgs = scan_folder_images(path)
+            return f"📁 {folder_badge} {base} ({len(imgs)}{count_suffix})", "folder"
+        if ppt_engine.is_ppt_file(path):
+            cached = ppt_engine.read_cache(path)
+            return (f"📊 {base} ({cached['count']}{count_suffix})" if cached else f"📊 {base}"), "pptx"
+        if is_video_file(path):
+            return f"🎬 {base}", "video"
+        return f"📄 {base}", "text"
+
+    def _refresh_text_files_list(self, select_path: str = "", select_group=None, select_header: bool = False):
+        """등록 항목을 읽어 list_text_files 를 다시 그림.
+
+        목록 폴더(📂 교사 예배 …)가 먼저, 그 아래에 폴더 밖 항목들이 온다.
+        폴더 머리를 누르면 펼치기/접기, 휴지통은 그 자리(폴더 안이면 그 폴더)에서만 뺀다.
+        """
+        if not hasattr(self, "list_text_files"):
+            return
+        lst = self.list_text_files
+        lst.blockSignals(True)
+        lst.clear()
         font_size = getattr(self, "_library_font_size", 12)
         row_height = max(22, font_size + 14)
-        for number, path in enumerate(self._get_registered_text_files(), start=1):
-            if not path:
-                continue
-            base = os.path.basename(path)
-            if mix_bundle.is_mix_file(path):
-                data = mix_bundle.load_mix(path)
-                text = f"🔗 {mix_bundle.display_name(data)} ({len(data['sources'])}{self.t('mix_files_suffix')})"
-                kind = "mix"
-            elif os.path.isdir(path):
-                imgs = scan_folder_images(path)
-                text = f"📁 {folder_badge} {base} ({len(imgs)}{count_suffix})"
-                kind = "folder"
-            elif ppt_engine.is_ppt_file(path):
-                cached = ppt_engine.read_cache(path)
-                text = (f"📊 {base} ({cached['count']}{count_suffix})"
-                        if cached else f"📊 {base}")
-                kind = "pptx"
-            elif is_video_file(path):
-                text = f"🎬 {base}"
-                kind = "video"
-            else:
-                text = f"📄 {base}"
-                kind = "text"
+        lib = self._library()
+
+        def add_row(kind, path, group, index, text, color, tooltip="", number=None, indent=0, bold=False,
+                    deletable=True):
             item = QListWidgetItem()
             item.setSizeHint(QSize(0, row_height))
             item.setData(USER_ROLE_KIND, kind)
             item.setData(USER_ROLE_PATH, path)
-            self.list_text_files.addItem(item)
-
+            item.setData(USER_ROLE_GROUP, group)
+            item.setData(USER_ROLE_INDEX, index)
+            if kind == "empty":
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            lst.addItem(item)
             row_widget = LibraryRowWidget()
-            row_widget.set_content(number, text, self._LIBRARY_ITEM_COLORS.get(kind, "#e0e0e0"), path)
+            row_widget.set_content(number, text, color, tooltip, indent=indent, bold=bold)
             row_widget.set_font_size(font_size)
+            row_widget.btn_delete.setVisible(deletable)
             row_widget.clicked.connect(lambda it=item: self._on_text_file_library_clicked(it))
-            row_widget.deleteClicked.connect(lambda p=path: self._remove_one_text_file(p))
-            self.list_text_files.setItemWidget(item, row_widget)
-        # 선택 복원
-        if select_path:
-            for row in range(self.list_text_files.count()):
-                it = self.list_text_files.item(row)
-                if it.data(USER_ROLE_PATH) == select_path:
-                    self.list_text_files.setCurrentRow(row)
+            if kind == "group":
+                row_widget.deleteClicked.connect(lambda g=group: self._delete_library_folder(g))
+            else:
+                row_widget.deleteClicked.connect(lambda p=path, g=group: self._remove_one_text_file(p, g))
+            lst.setItemWidget(item, row_widget)
+            return item
+
+        for g, folder in enumerate(lib.folders):
+            arrow = "▼" if folder["open"] else "▶"
+            add_row("group", "", g, -1, f"{arrow} 📂 {folder['name']} ({len(folder['items'])})",
+                    self._LIBRARY_ITEM_COLORS["group"], folder["name"], bold=True)
+            if not folder["open"]:
+                continue
+            if not folder["items"]:
+                add_row("empty", "", g, -1, self.t("lib_folder_empty"), "#777777", indent=18, deletable=False)
+            for i, path in enumerate(folder["items"], start=1):
+                text, kind = self._library_row_text(path)
+                add_row(kind, path, g, i - 1, text, self._LIBRARY_ITEM_COLORS.get(kind, "#e0e0e0"),
+                        path, number=i, indent=18)
+        for i, path in enumerate(lib.loose, start=1):
+            text, kind = self._library_row_text(path)
+            add_row(kind, path, LOOSE, i - 1, text, self._LIBRARY_ITEM_COLORS.get(kind, "#e0e0e0"),
+                    path, number=i)
+
+        # 선택 복원 (같은 파일이 여러 폴더에 있으면 지정한 폴더 쪽, 없으면 첫 자리)
+        chosen = -1
+        for row in range(lst.count()):
+            it = lst.item(row)
+            if select_header:
+                if it.data(USER_ROLE_KIND) == "group" and it.data(USER_ROLE_GROUP) == select_group:
+                    chosen = row
                     break
-        self.list_text_files.blockSignals(False)
+                continue
+            if select_path and it.data(USER_ROLE_PATH) == select_path:
+                if select_group is None or it.data(USER_ROLE_GROUP) == select_group:
+                    chosen = row
+                    break
+                if chosen < 0:
+                    chosen = row
+        if chosen >= 0:
+            lst.setCurrentRow(chosen)
+        lst.blockSignals(False)
+
+    def _delete_library_folder(self, group: int):
+        lib = self._library()
+        if not (0 <= group < len(lib.folders)):
+            return
+        if QMessageBox.question(self, self.t("lib_delete_folder_title"),
+                                self.t("lib_delete_folder_msg", lib.folders[group]["name"])) != QMessageBox.StandardButton.Yes:
+            return
+        lib.delete_folder(group)
+        self._save_library(lib)
+        self._refresh_text_files_list()
+
+    def _rename_library_folder(self, group: int):
+        from PySide6.QtWidgets import QInputDialog
+        lib = self._library()
+        if not (0 <= group < len(lib.folders)):
+            return
+        name, ok = QInputDialog.getText(self, self.t("lib_folder_name_title"), self.t("lib_folder_name_prompt"),
+                                        text=lib.folders[group]["name"])
+        if ok and name.strip():
+            lib.rename_folder(group, name)
+            self._save_library(lib)
+            self._refresh_text_files_list(select_group=group, select_header=True)
 
     def _adjust_library_font_size(self, delta: int):
         """왼쪽 파일 목록 글자 크기 조정 (Ctrl+휠)"""
@@ -5440,42 +5816,16 @@ class MainWindow(QMainWindow):
 
     # --- 왼쪽 목록: 겹쳐서 묶기 / 묶음 풀기 ---
     def _on_library_items_merged(self, sources: list, target: str):
-        sources = [p for p in sources if p and p != target]
-        if not sources or not target:
+        """(경로로) 겹쳐서 묶기 - 각 파일의 첫 자리를 쓴다"""
+        lib = self._library()
+        t_refs = lib.locate(target)
+        if not t_refs:
             return
-        library = self._get_registered_text_files()
-        # 겹친 대상의 카드들 → 끌어 온 것들의 카드들 순서로 (묶음은 섞어 둔 순서 그대로)
-        order = []
-        for src in [target] + sources:
-            order += [k for k in self._arranged_keys(src) if k not in order]
-        try:
-            if mix_bundle.is_mix_file(target):
-                mix_bundle.add_sources(target, sources)
-                mix_path = target
-                message = "msg_mix_added"
-            else:
-                mix_path = mix_bundle.create_mix(self._settings_dir, [target] + sources)
-                message = "msg_mix_created"
-            data = mix_bundle.load_mix(mix_path)
-            data["order"] = order
-            mix_bundle.save_mix(mix_path, data)
-        except OSError as e:
-            QMessageBox.warning(self, self.t("notice"), str(e))
-            return
-        new_library = []
-        for p in library:
-            if p == target:
-                new_library.append(mix_path)
-            elif p in sources:
-                continue
-            else:
-                new_library.append(p)
-        if mix_path not in new_library:
-            new_library.append(mix_path)
-        self._save_registered_text_files(new_library)
-        self._refresh_text_files_list(select_path=mix_path)
-        self._load_mix(mix_path)
-        self.statusBar().showMessage(self.t(message, self.media_source_name), 6000)
+        src_refs = []
+        for p in sources:
+            if p and p != target:
+                src_refs += lib.locate(p)[:1]
+        self._library_merge(src_refs, t_refs[0])
 
     def _arranged_keys(self, path: str) -> list:
         """파일(또는 묶음) 하나의 카드 순서 - 묶음이면 섞어 둔 순서, 파일이면 원래 순서"""
@@ -5485,32 +5835,95 @@ class MainWindow(QMainWindow):
         return [e.key for e in mix_bundle.source_entries(path, **readers)]
 
     def _on_library_context_menu(self, pos):
-        item = self.list_text_files.itemAt(pos)
-        if item is None:
-            return
-        path = item.data(USER_ROLE_PATH)
+        lst = self.list_text_files
+        item = lst.itemAt(pos)
+        lib = self._library()
         menu = QMenu(self)
-        if mix_bundle.is_mix_file(path):
-            act = menu.addAction(self.t("mix_menu_ungroup"))
-            if menu.exec(self.list_text_files.viewport().mapToGlobal(pos)) is act:
-                QTimer.singleShot(0, lambda: self._ungroup_mix(path))
+        actions = {}
+        if item is None or item.data(USER_ROLE_KIND) == "empty":
+            actions[menu.addAction(self.t("lib_menu_new_folder"))] = ("new", None)
+        elif item.data(USER_ROLE_KIND) == "group":
+            g = int(item.data(USER_ROLE_GROUP))
+            opened = lib.folders[g]["open"] if 0 <= g < len(lib.folders) else True
+            actions[menu.addAction(self.t("lib_menu_fold" if opened else "lib_menu_unfold"))] = ("toggle", g)
+            actions[menu.addAction(self.t("lib_menu_rename"))] = ("rename", g)
+            menu.addSeparator()
+            actions[menu.addAction(self.t("lib_menu_delete_folder"))] = ("delete_folder", g)
         else:
-            hint = menu.addAction(self.t("mix_menu_hint"))
-            hint.setEnabled(False)
-            menu.exec(self.list_text_files.viewport().mapToGlobal(pos))
+            if not item.isSelected():
+                lst.clearSelection()
+                item.setSelected(True)
+            refs = [r for r in (self._row_ref(it) for it in lst.selectedItems()) if r is not None]
+            here = int(item.data(USER_ROLE_GROUP))
+            path = item.data(USER_ROLE_PATH)
+            move_menu = menu.addMenu(self.t("lib_menu_move_to"))
+            copy_menu = menu.addMenu(self.t("lib_menu_copy_to"))
+            for g, folder in enumerate(lib.folders):
+                if g != here:
+                    actions[move_menu.addAction(f"📂 {folder['name']}")] = ("move", g)
+                    actions[copy_menu.addAction(f"📂 {folder['name']}")] = ("copy", g)
+            for sub, kind in ((move_menu, "move_new"), (copy_menu, "copy_new")):
+                if lib.folders:
+                    sub.addSeparator()
+                actions[sub.addAction(self.t("lib_menu_new_folder_item"))] = (kind, None)
+            if here != LOOSE:
+                actions[menu.addAction(self.t("lib_menu_take_out"))] = ("take_out", None)
+                actions[menu.addAction(self.t("lib_menu_remove_here"))] = ("remove_here", None)
+            menu.addSeparator()
+            if mix_bundle.is_mix_file(path):
+                actions[menu.addAction(self.t("mix_menu_ungroup"))] = ("ungroup", path)
+            else:
+                hint = menu.addAction(self.t("mix_menu_hint"))
+                hint.setEnabled(False)
+        chosen = menu.exec(lst.viewport().mapToGlobal(pos))
+        if chosen not in actions:
+            return
+        what, arg = actions[chosen]
+        if what == "new":
+            QTimer.singleShot(0, lambda: self._new_library_folder())
+        elif what == "toggle":
+            lib.toggle_folder(arg)
+            self._save_library(lib)
+            self._refresh_text_files_list(select_group=arg, select_header=True)
+        elif what == "rename":
+            QTimer.singleShot(0, lambda: self._rename_library_folder(arg))
+        elif what == "delete_folder":
+            QTimer.singleShot(0, lambda: self._delete_library_folder(arg))
+        elif what in ("move", "copy"):
+            placed = lib.place(refs, arg, copy=(what == "copy"))
+            self._save_library(lib)
+            self._refresh_text_files_list(select_path=placed[0] if placed else "", select_group=arg)
+            self.statusBar().showMessage(
+                self.t("msg_lib_copied" if what == "copy" else "msg_lib_moved", lib.folders[arg]["name"]), 4000)
+        elif what in ("move_new", "copy_new"):
+            QTimer.singleShot(0, lambda: self._new_library_folder(refs=refs, copy=(what == "copy_new")))
+        elif what == "take_out":
+            placed = lib.place(refs, LOOSE)
+            self._save_library(lib)
+            self._refresh_text_files_list(select_path=placed[0] if placed else "", select_group=LOOSE)
+        elif what == "remove_here":
+            lib.remove(refs)
+            self._save_library(lib)
+            self._refresh_text_files_list()
+        elif what == "ungroup":
+            QTimer.singleShot(0, lambda: self._ungroup_mix(arg))
 
     def _ungroup_mix(self, path: str):
-        """묶음을 풀어 원래 파일들을 그 자리에 되돌려 놓는다 (묶음 파일은 남겨 둔다)"""
+        """묶음을 풀어 원래 파일들을 그 자리에 되돌려 놓는다 (묶음 파일은 남겨 둔다).
+        묶음이 여러 폴더에 들어 있으면 그 자리마다 푼다."""
         data = mix_bundle.load_mix(path)
-        library = self._get_registered_text_files()
-        if path not in library:
+        lib = self._library()
+        refs = lib.locate(path)
+        if not refs:
             return
-        at = library.index(path)
-        rest = [p for p in library if p != path]
-        back = [p for p in data["sources"] if p not in rest and os.path.exists(p)]
-        new_library = rest[:at] + back + rest[at:]
-        self._save_registered_text_files(new_library)
-        self._refresh_text_files_list(select_path=back[0] if back else "")
+        sources = [p for p in data["sources"] if os.path.exists(p)]
+        back = []
+        # 뒤에서부터 풀어야 같은 폴더 안 번호가 밀리지 않는다
+        for ref in sorted(refs, key=lambda r: (r[0], r[1]), reverse=True):
+            back = lib.expand(ref, sources) or back
+        self._save_library(lib)
+        first_ref = sorted(refs)[0] if refs else (LOOSE, 0)
+        self._refresh_text_files_list(select_path=back[0] if back else "", select_group=first_ref[0])
         if getattr(self, "current_source_path", "") == path and back:
             first = back[0]
             if os.path.isdir(first):
